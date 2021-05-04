@@ -83,13 +83,13 @@ def preprocess_img(image: np.ndarray):
     # noise_removal = cv2.fastNlMeansDenoising(gray, None, 20, 7, 21)
     th2, img_bin_noise = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
     thinned = cv2.ximgproc.thinning(img_bin_noise)
-    dilated = cv2.dilate(thinned, np.ones((1,10),np.uint8))
-    thinned2 = cv2.ximgproc.thinning(dilated)
+    #dilated = cv2.dilate(thinned, np.ones((1,10),np.uint8))
+    #thinned2 = cv2.ximgproc.thinning(dilated)
     # thinned = cv2.dilate(thinned,np.ones((6,1),np.uint8))
-    contours, hierarchy = cv2.findContours(thinned2, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    contours, hierarchy = cv2.findContours(thinned, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
     # classified_contour_image = np.zeros((img.shape[0], img.shape[1]), np.uint8)
     classified_contours = contour_classification(contours)
-    return classified_contours, thinned2, img_bin_noise, thinned, gray
+    return classified_contours, thinned, img_bin_noise, gray, gray
 
 
 def rotate(image, angle, center=None, scale=1.0):
