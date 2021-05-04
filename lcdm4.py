@@ -79,14 +79,17 @@ def toQImage(im, copy=False):
 
 def preprocess_img(image: np.ndarray):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    #noise_removal = cv2.GaussianBlur(gray, (5,5),3)
     # noise_removal = cv2.fastNlMeansDenoising(gray, None, 20, 7, 21)
-    th2, img_bin_noise = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    th2, img_bin_noise = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
     thinned = cv2.ximgproc.thinning(img_bin_noise)
+    dilated = cv2.dilate(thinned, np.ones((1,10),np.uint8))
+    thinned2 = cv2.ximgproc.thinning(dilated)
     # thinned = cv2.dilate(thinned,np.ones((6,1),np.uint8))
-    contours, hierarchy = cv2.findContours(thinned, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    contours, hierarchy = cv2.findContours(thinned2, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
     # classified_contour_image = np.zeros((img.shape[0], img.shape[1]), np.uint8)
     classified_contours = contour_classification(contours)
-    return classified_contours, thinned, img_bin_noise, gray, gray
+    return classified_contours, thinned2, img_bin_noise, thinned, gray
 
 
 def rotate(image, angle, center=None, scale=1.0):
@@ -352,7 +355,7 @@ def find_horizontal_areas(horizontal_lines_image, angle, areas_gap, min_area_val
         vertical_proj = vertical_projection(tmp_image_h_rotated[area[0]:area[1] + 1, :])
 
         # trying to find lines that are not just minimal fragments left
-        vertical_areas = find_areas(vertical_proj, 100, 10)
+        vertical_areas = find_areas(vertical_proj, 300, 5)
         # total combined length of all lines in the area
         if vertical_areas.shape[0] == 0:
             area_length = 0
@@ -410,17 +413,35 @@ def find_horizontal_areas(horizontal_lines_image, angle, areas_gap, min_area_val
             "vertical_areas": horizontal_area_vertical_areas}
 
 
+def find_vertical_lines_2(vertical_lines_image, angle, horizontal_lines, horizontal_lines_vertical_areas):
+    tmp_image_v_rotated = rotate(vertical_lines_image,angle)
+
+    for i in range(0, horizontal_lines.shape[0] - 1):
+        k = i + 1
+        found_next_line = False
+        overlapping_points = []
+        start_point_1 = horizontal_lines_vertical_areas[i][0][0]
+        end_point_1 = horizontal_lines_vertical_areas[i][-1][1]
+        available_area = end_point_1 - start_point_1
+        while k < horizontal_lines.shape[0] and available_area > 100:
+            for j in range(0, horizontal_lines_vertical_areas[i].shape[0]):
+                start_point = horizontal_lines_vertical_areas[i][j][0]
+                end_point = horizontal_lines_vertical_areas[i][j][1]
+                overlaps = []
+
+
+
 def find_vertical_areas(vertical_lines_image, angle, areas_gap, min_area_value=1):
     tmp_image_v_rotated = rotate(vertical_lines_image, angle)
     vertical_proj = vertical_projection(tmp_image_v_rotated)
-    angle_vertical_areas = find_areas(vertical_proj, 3, 5)
+    angle_vertical_areas = find_areas(vertical_proj, 3, 1)
 
     filtered_vertical_areas = []
     vertical_area_horizontal_areas = []
     for area in angle_vertical_areas:
-        horizontal_proj = horizontal_projection(tmp_image_v_rotated[:, area[0]:area[1] + 1])
+        horizontal_proj = horizontal_projection(tmp_image_v_rotated[:, area[0]-1:area[1] + 1])
         cv2.imwrite("export/vertical-test-"+ str(area[0]) + "-" + str(area[1]) + ".jpg", tmp_image_v_rotated[:,area[0]: area[1]+1])
-        horizontal_areas = find_areas(horizontal_proj, 100, 5)
+        horizontal_areas = find_areas(horizontal_proj, 200, 15)
         if horizontal_areas.shape[0] == 0:
             area_sum = 0
         elif horizontal_areas.shape[0] == 1:
@@ -510,7 +531,7 @@ class DialogApp(QWidget):
         self.image_name = None
 
         self.horizontal_contour_min_length = 12
-        self.vertical_contour_min_length = 6
+        self.vertical_contour_min_length = 14
 
         self.horizontal_contour_length_slider = SliderDuo("Minimal horizontal contour length",
                                                           self.horizontal_contour_min_length, 1, 60)
@@ -531,7 +552,7 @@ class DialogApp(QWidget):
         self.find_vertical_lines_button.clicked.connect(self.activate_find_vertical_lines)
 
         self.horizontal_contour_gap = 4
-        self.vertical_contour_gap = 4
+        self.vertical_contour_gap = 1
 
         self.horizontal_contour_gap_slider = SliderDuo("Horizontal contour gap", self.horizontal_contour_gap, 1, 20)
         self.horizontal_contour_gap_slider.changed.connect(self.update_horizontal_contour_gap)
@@ -544,9 +565,9 @@ class DialogApp(QWidget):
                                                             self.horizontal_lines_merge_size, 40, 500)
         self.horizontal_lines_merge_size_slider.changed.connect(self.update_horizontal_lines_merge_size)
 
-        self.vertical_lines_merge_size = 50
+        self.vertical_lines_merge_size = 100
         self.vertical_lines_merge_size_slider = SliderDuo("Vertical lines merge length",
-                                                          self.vertical_lines_merge_size, 40, 500)
+                                                          self.vertical_lines_merge_size, 10, 1000)
         self.vertical_lines_merge_size_slider.changed.connect(self.update_vertical_lines_merge_size)
 
         self.horizontal_lines_min_size = 10
@@ -554,9 +575,9 @@ class DialogApp(QWidget):
                                                           self.horizontal_lines_min_size, 1, 60)
         self.horizontal_lines_min_size_slider.changed.connect(self.update_horizontal_lines_min_size)
 
-        self.vertical_lines_min_size = 5
+        self.vertical_lines_min_size = 10
         self.vertical_lines_min_size_slider = SliderDuo("Vertical lines minimal size",
-                                                        self.vertical_lines_min_size, 1, 60)
+                                                        self.vertical_lines_min_size, 1, 500)
         self.vertical_lines_min_size_slider.changed.connect(self.update_vertical_lines_min_size)
 
         self.horizontal_fixed_viewer = None
@@ -806,7 +827,7 @@ class Worker(QObject):
                                                      self.vertical_contour_gap,
                                                      [7, 3],
                                                      (self.image_height, self.image_width))
-        min_area = find_vertical_areas(tmp_image_v, self.angle_for_vertical_lines, 1)
+        min_area = find_vertical_areas(tmp_image_v, self.angle_for_vertical_lines, self.vertical_lines_min_size)
 
         # debug_save_finding_horizontal_areas("img/", min_area)
         """
