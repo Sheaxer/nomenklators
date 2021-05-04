@@ -21,14 +21,18 @@ from matplotlib import pyplot as plt
 gray_color_table = [qRgb(i, i, i) for i in range(256)]
 
 
-def fill_horizontal_lines(img, start_row, vertical_areas, start_index, stop_index):
+def fill_horizontal_lines(img, start_row, end_row, vertical_areas, start_index, stop_index):
     for i in range(start_index, stop_index):
         j = start_row
-        while img[j, vertical_areas[i][1]] == 0:
+        while j <= end_row and img[j, vertical_areas[i][1]] == 0:
             j += 1
+        if img[j, vertical_areas[i][1]] == 0:
+            j = start_row + int((end_row - start_row) / 2)
         k = start_row
-        while img[k, vertical_areas[i + 1][0]] == 0:
+        while k <= end_row and img[k, vertical_areas[i + 1][0]] == 0:
             k += 1
+        if img[j, vertical_areas[i + 1][0]] == 0:
+            k = start_row + int((end_row - start_row) / 2)
         cv2.line(img, (vertical_areas[i][1], j), (vertical_areas[i + 1][0], k), (255, 255, 255), 1)
     return img
 
@@ -98,6 +102,22 @@ def rotate(image, angle, center=None, scale=1.0):
     return rotated
 
 
+def get_coordiantes_after_rotation(points, angle, image_shape, mat=None, center=None):
+    if center is None:
+        center = (image_shape[1] / 2, image_shape[0] / 2)
+    if mat is None:
+        mat = cv2.getRotationMatrix2D(center, angle, 1.0)
+    new_points = []
+    for point in points:
+        new_point = [0, 0]
+
+        new_point[0] = int(mat[0][0] * point[0] + mat[0][1] * point[1] + mat[0][2])
+        new_point[1] = int(mat[1][0] * point[0] + mat[1][1] * point[1] + mat[1][2])
+        new_point = np.array(new_point,np.uint32)
+        new_points.append(new_point)
+    return np.array(new_points,np.uint32)
+
+
 def vertical_projection(img, flip=False):
     if flip:
         image = ~img
@@ -151,15 +171,14 @@ def find_areas(data, minimal_gap=2, min_value=1):
     zero_vals = 0
     areas = []
     area_start = 0
-    area_sum = 0
     for i in range(0, data.size):
         if (0 - eps) < data[i] < eps:
             if is_area:
                 if zero_vals >= minimal_gap:
                     is_area = False
-                    if int(area_sum) >= min_value:
+                    if int(i - zero_vals - area_start) >= min_value:
                         areas.append(
-                            np.array((area_start, i - zero_vals, i - zero_vals - area_start, int(area_sum)), np.uint32))
+                            np.array((area_start, i - zero_vals, i - zero_vals - area_start), np.uint32))
                     zero_vals = 0
                     area_sum = 0
                 else:
@@ -169,11 +188,10 @@ def find_areas(data, minimal_gap=2, min_value=1):
                 is_area = True
                 area_start = i
             zero_vals = 0
-            area_sum += data[i]
     if is_area:
-        if int(area_sum) >= min_value:
+        if int(data.shape[0] - 1 - zero_vals - area_start) >= min_value:
             areas.append(np.array((area_start, data.shape[0] - 1 - zero_vals,
-                                   data.shape[0] - 1 - zero_vals - area_start, int(area_sum)), np.uint32))
+                                   data.shape[0] - 1 - zero_vals - area_start), np.uint32))
     areas = np.array(areas)
     return areas
 
@@ -320,19 +338,104 @@ def create_allowed_direction_image(classified_contours, minimal_size, max_gap, a
 
 
 def find_horizontal_areas(horizontal_lines_image, angle, areas_gap, min_area_value=1):
+    # rotate image
     tmp_image_h_rotated = rotate(horizontal_lines_image, angle)
+    # horizontal projection - trying to find horizontal lines
     horizontal_proj = horizontal_projection(tmp_image_h_rotated)
-    angle_horizontal_areas = find_areas(horizontal_proj, areas_gap, min_area_value)
-    return {"angle": angle, "areas": angle_horizontal_areas, "image": tmp_image_h_rotated,
-            "total_area": np.sum(angle_horizontal_areas[:, 2]), "projection": horizontal_proj}
+    # sepparating whole lines together
+    angle_horizontal_areas = find_areas(horizontal_proj, areas_gap, 5)
+    # preparing to filter out fake lines - e.g. those that dont have sufficient length
+    filtered_horizontal_areas = []
+    horizontal_area_vertical_areas = []
+    for area in angle_horizontal_areas:
+        # do a vertical projection on the area - find the length of line segments
+        vertical_proj = vertical_projection(tmp_image_h_rotated[area[0]:area[1] + 1, :])
+
+        # trying to find lines that are not just minimal fragments left
+        vertical_areas = find_areas(vertical_proj, 100, 10)
+        # total combined length of all lines in the area
+        if vertical_areas.shape[0] == 0:
+            area_length = 0
+        elif vertical_areas.shape[0] == 1:
+            area_length = vertical_areas[0][2]
+        else:
+            area_length = np.sum(vertical_areas[:, 2])
+
+        # this is to check if its not just some random noise
+        if area_length > min_area_value:
+            filtered_horizontal_areas.append(np.append(area, area_length))
+            horizontal_area_vertical_areas.append(vertical_areas)
+
+    filtered_horizontal_areas = np.array(filtered_horizontal_areas, np.uint32)
+    filtered_horizontal_area_vertical_areas = []
+    # trying to sepparate table lines from substituion leading lines
+    if filtered_horizontal_areas.shape[0] > 6:
+        # try to find out 3 largest lines and calculate mean and standard deviation with 1 degree of freedom
+        max_values = filtered_horizontal_areas[np.argsort(filtered_horizontal_areas[:, 3])[-3:], 3]
+        mean = np.mean(max_values)
+        disp = np.std(max_values, None, None, None, 1)
+        # low value
+        lower = int(mean - 3 * disp)
+        allowed = 0
+        is_allowed = True
+        filtered_horizontal_areas2 = []
+        # allow short lines only if there are few of them inside longer lines - table
+        # if there is bunch of short lines in succession it should mean leading lines of substitution
+        for i in range(0, filtered_horizontal_areas.shape[0]):
+            if filtered_horizontal_areas[i][3] > lower:
+                filtered_horizontal_areas2.append(filtered_horizontal_areas[i])
+                filtered_horizontal_area_vertical_areas.append(horizontal_area_vertical_areas[i])
+                allowed = 0
+            elif is_allowed:
+                if allowed < 4:
+                    allowed += 1
+                    filtered_horizontal_areas2.append(filtered_horizontal_areas[i])
+                    filtered_horizontal_area_vertical_areas.append(horizontal_area_vertical_areas[i])
+                else:
+                    is_allowed = False
+                    for j in range(0, allowed):
+                        filtered_horizontal_areas2.pop()
+                        filtered_horizontal_area_vertical_areas.pop()
+                    allowed = 0
+        if allowed != 0:
+            for j in range(0, allowed):
+                filtered_horizontal_areas2.pop()
+                filtered_horizontal_area_vertical_areas.pop()
+
+        filtered_horizontal_areas = np.array(filtered_horizontal_areas2)
+        horizontal_area_vertical_areas = filtered_horizontal_area_vertical_areas
+
+    return {"angle": angle, "areas": filtered_horizontal_areas, "image": tmp_image_h_rotated,
+            "total_area": np.sum(filtered_horizontal_areas[:, 2]), "projection": horizontal_proj,
+            "vertical_areas": horizontal_area_vertical_areas}
 
 
 def find_vertical_areas(vertical_lines_image, angle, areas_gap, min_area_value=1):
     tmp_image_v_rotated = rotate(vertical_lines_image, angle)
     vertical_proj = vertical_projection(tmp_image_v_rotated)
-    angle_vertical_areas = find_areas(vertical_proj, areas_gap, min_area_value)
-    return {"angle": angle, "areas": angle_vertical_areas, "image": tmp_image_v_rotated,
-            "total_area": np.sum(angle_vertical_areas[:, 2]), "projection": vertical_proj}
+    angle_vertical_areas = find_areas(vertical_proj, areas_gap, 5)
+
+    filtered_vertical_areas = []
+    vertical_area_horizontal_areas = []
+    for area in angle_vertical_areas:
+        horizontal_proj = horizontal_projection(tmp_image_v_rotated[:, area[0]:area[1] + 1])
+        horizontal_areas = find_areas(horizontal_proj, 5, 2)
+        if horizontal_areas.shape[0] == 0:
+            area_sum = 0
+        elif horizontal_areas.shape[0] == 1:
+            area_sum = horizontal_areas[0][2]
+        else:
+            area_sum = np.sum(horizontal_areas[:, 2])
+
+        if area_sum > min_area_value:
+            filtered_vertical_areas.append(np.append(area, area_sum))
+            vertical_area_horizontal_areas.append(horizontal_areas)
+
+    filtered_vertical_areas = np.array(filtered_vertical_areas, np.uint32)
+
+    return {"angle": angle, "areas": filtered_vertical_areas, "image": tmp_image_v_rotated,
+            "total_area": np.sum(filtered_vertical_areas[:, 2]), "projection": vertical_proj,
+            "horizontal_areas": vertical_area_horizontal_areas}
 
 
 class SliderDuo(QWidget):
@@ -636,8 +739,9 @@ class DialogApp(QWidget):
 
         self.save_image(graph, "Horizontal-Areas-" + print_str)
         self.save_image(second_image, "highlated-lines-" + print_str)
-        self.save_image(min_area['fixed-image'], "fixed-lines-" + print_str + print_str_2)
-        self.save_variable(min_area['vertical-areas'], "horizontal-lines-vertical-areas-" + print_str + print_str_2)
+        self.save_image(min_area['fixed_image'], "fixed-lines-" + print_str + print_str_2)
+        # self.save_image(min_area['fixed_image_2'], "fixed-lines2-" + print_str + print_str_2)
+        self.save_variable(min_area['vertical_areas'], "horizontal-lines-vertical-areas-" + print_str + print_str_2)
         # create_viewer(min_area['fixed-image'], "Fixed Horizontal Lines " + print_str + print_str_2)
         self.operationLock.unlock()
 
@@ -697,7 +801,7 @@ class Worker(QObject):
     def find_horizontal_lines(self):
         tmp_image_h = create_allowed_direction_image(self.classified_contours, self.horizontal_contour_min_length,
                                                      self.horizontal_contour_gap,
-                                                     [1, 5, 2, 8],
+                                                     [1, 5],
                                                      (self.image_height, self.image_width))
         min_area = find_horizontal_areas(tmp_image_h, -2.0, 10, self.horizontal_lines_min_size)
         # hist, _ = np.histogram((tmp_image_h / 255).ravel(), 256,[0,255] )
@@ -710,47 +814,56 @@ class Worker(QObject):
                 min_area = tmp_area
 
         # for area in min_area['areas']:
-        horizontal_lines_vertical_areas = []
-        img2 = np.copy(min_area['image'])
-        for area in min_area['areas']:
-
-            vert_proj = vertical_projection(min_area['image'][area[0]:area[1], :])
-            vert_areas = find_areas(vert_proj, 1, 1)
+        horizontal_area_vertical_areas = []
+        img2 = np.zeros_like(min_area['image'])
+        for i in range(0, len(min_area['vertical_areas'])):
             merged_vert_areas = []
-            print("area-" + str(area[0]) + " - " + str(area[1]))
+
             start_index = 0
-            for i in range(1, vert_areas.shape[0] - 1):
-                print(str(vert_areas[i + 1][0] - vert_areas[i][1]))
-                gap = vert_areas[i + 1][0] - vert_areas[i][1]
+            for j in range(0, min_area['vertical_areas'][i].shape[0] - 1):
+                print(str(min_area['vertical_areas'][i][j + 1][0] - min_area['vertical_areas'][i][j][1]))
+                gap = min_area['vertical_areas'][i][j + 1][0] - min_area['vertical_areas'][i][j][1]
                 if gap >= self.horizontal_lines_merge_size:
-                    if start_index != i:
-                        merged_vert_areas.append(np.array([vert_areas[start_index][0], vert_areas[i][1],
-                                                           vert_areas[i][1] - vert_areas[start_index][0],
-                                                           np.sum(vert_areas[start_index:i, 3])]))
+                    if start_index != j:
+
+                        merged_vert_areas.append(np.array(
+                            [min_area['vertical_areas'][i][start_index][0], min_area['vertical_areas'][i][j][1],
+                             min_area['vertical_areas'][i][j][1] - min_area['vertical_areas'][i][start_index][0]]))
                         """
                         cv2.line(img2, (vert_areas[start_index][1],area[0]),
                                  (vert_areas[i][0], area[0]), (255,255,255),1)
                         """
-                        img2 = fill_horizontal_lines(img2, area[0], vert_areas, start_index, i)
-                    else:
-                        merged_vert_areas.append(vert_areas[i])
-                    start_index = i + 1
 
-            if start_index != vert_areas.shape[0] - 1:
-                merged_vert_areas.append(np.array([vert_areas[start_index][0], vert_areas[-1][1],
-                                                   vert_areas[-1][1] - vert_areas[start_index][0],
-                                                   np.sum(vert_areas[start_index:-1, 3])]))
+                    else:
+                        merged_vert_areas.append(min_area['vertical_areas'][i][j])
+                    start_index = j + 1
+
+            if start_index < min_area['vertical_areas'][i].shape[0] - 1:
+                merged_vert_areas.append(np.array([min_area['vertical_areas'][i][start_index][0],
+                                                   min_area['vertical_areas'][i][-1][1],
+                                                   min_area['vertical_areas'][i][-1][1] -
+                                                   min_area['vertical_areas'][i][start_index][0]]))
                 """
                 cv2.line(img2, (vert_areas[start_index][1], area[0]),
                          (vert_areas[-1][0], area[0]), (255, 255, 255), 1)
                  """
-                img2 = fill_horizontal_lines(img2, area[0], vert_areas, start_index, vert_areas.shape[0] - 1)
             else:
-                merged_vert_areas.append(vert_areas[-1])
+                merged_vert_areas.append(min_area['vertical_areas'][i][-1])
 
-            horizontal_lines_vertical_areas.append(np.array(merged_vert_areas, np.uint32))
-        min_area['vertical-areas'] = horizontal_lines_vertical_areas
-        min_area['fixed-image'] = img2
+            merged_vert_areas = np.array(merged_vert_areas, np.uint32)
+            horizontal_area_vertical_areas.append(merged_vert_areas)
+            min_area['areas'][i][3] = np.sum(merged_vert_areas[:, 2])
+
+        min_area['vertical_areas'] = horizontal_area_vertical_areas
+
+        for i in range(0, len(min_area['areas'])):
+            start_row = min_area['areas'][i][0]
+            end_row = min_area['areas'][i][1]
+            row_index = start_row + int((end_row - start_row) / 2)
+            for vert_area in min_area['vertical_areas'][i]:
+                cv2.line(img2, (vert_area[0], row_index), (vert_area[1], row_index), (255, 255, 255), 1)
+
+        min_area['fixed_image'] = img2
         # cv2.imwrite("export/fixed_lines.jpg",img2)
         self.processed5.emit(min_area, tmp_image_h)
         self.finished.emit()
