@@ -20,9 +20,30 @@ from matplotlib import pyplot as plt
 
 gray_color_table = [qRgb(i, i, i) for i in range(256)]
 
+def binarize_image(img, otsu=True):
+    img_binarized = None
+    if otsu:
+        threshold, img_binarized = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    else:
+        threshold, img_binarized = cv2.threshold(img, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    return img_binarized
+
 def equalize_image(img):
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     return clahe.apply(img)
+
+def _get_kernel(theta) -> float:
+    ksize = 31
+    return cv2.getGaborKernel((ksize, ksize), 4.0, theta, 10.0, 0.5, 0, ktype=cv2.CV_32F)
+
+
+def filter_image(img, theta=np.pi):
+    kernel = _get_kernel(theta)
+    return cv2.filter2D(img, -1, kernel)
+
+
+def invert(img):
+    return cv2.bitwise_not(img)
 
 def fill_horizontal_lines(img, start_row, end_row, vertical_areas, start_index, stop_index):
     for i in range(start_index, stop_index):
@@ -73,7 +94,7 @@ def toQImage(im, copy=False):
 
         elif len(im.shape) == 3:
             if im.shape[2] == 3:
-                qim = QImage(im.data, im.shape[1], im.shape[0], im.strides[0], QImage.Format_RGB888)
+                qim = QImage(im.data, im.shape[1], im.shape[0], im.strides[0], QImage.Format_RGB888).rgbSwapped()
                 return qim.copy() if copy else qim
             elif im.shape[2] == 4:
                 qim = QImage(im.data, im.shape[1], im.shape[0], im.strides[0], QImage.Format_ARGB32)
@@ -84,15 +105,27 @@ def preprocess_img(image: np.ndarray):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     # noise_removal = cv2.GaussianBlur(gray, (5,5),3)
     # noise_removal = cv2.fastNlMeansDenoising(gray, None, 20, 7, 21)
-    th2, img_bin_noise = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    thinned = cv2.ximgproc.thinning(img_bin_noise)
+    equalized = equalize_image(gray)
+
+    img_filtered = filter_image(equalized, theta=np.pi)
+
+    _, img_vertical_binarized = cv2.threshold(img_filtered, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    img_filtered = filter_image(equalized, theta=np.pi/2)
+    _, img_horizontal_binarized = cv2.threshold(img_filtered, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+
+
+    # th2, img_bin_noise = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # thinned = cv2.ximgproc.thinning(img_bin_noise)
     # dilated = cv2.dilate(thinned, np.ones((1,10),np.uint8))
     # thinned2 = cv2.ximgproc.thinning(dilated)
     # thinned = cv2.dilate(thinned,np.ones((6,1),np.uint8))
-    contours, hierarchy = cv2.findContours(thinned, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    contours_vertical, hierarchy_horizontal = cv2.findContours(img_vertical_binarized, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    contours_horizontal, hierarchy_horizontal = cv2.findContours(img_horizontal_binarized, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+
     # classified_contour_image = np.zeros((img.shape[0], img.shape[1]), np.uint8)
-    classified_contours = contour_classification(contours)
-    return classified_contours, thinned, img_bin_noise, gray, gray
+    return contours_horizontal, contours_vertical
 
 
 def rotate(image, angle, center=None, scale=1.0):
@@ -342,6 +375,10 @@ def create_allowed_direction_image(classified_contours, minimal_size, max_gap, a
     return tmp_image
 
 
+
+
+
+
 def find_horizontal_areas(horizontal_lines_image, angle, areas_gap, min_vertical_area_value=5, min_line_value=300):
     # rotate image
     tmp_image_h_rotated = rotate(horizontal_lines_image, angle)
@@ -499,31 +536,6 @@ class DialogApp(QWidget):
     def __init__(self):
         super().__init__()
 
-        # self.viewer = PhotoViewer(self)
-        # self.viewer.photoClicked.connect(self.photoClicked)
-        self.thinned_viewer = None
-        self.horizontal_contours_viewer = None
-        self.vertical_viewer = None
-        self.restored_vertical_viewer = None
-
-        self.classified_contours = None
-        self.thinned = None
-        self.binarized = None
-        self.denoised = None
-        self.gray = None
-
-        self.horizontal_image = None
-        self.vertical_image = None
-
-        self.min_vertical_area = None
-        self.min_horizontal_area = None
-
-        self.horizontal_lines = None
-        self.vertical_lines = None
-
-        self.horizontal_lines_vertical_areas = None
-        self.vertical_lines_horizontal_areas = None
-
         self.operationLock = QMutex()
         self.worker_thread = None
         self.worker = None
@@ -535,94 +547,55 @@ class DialogApp(QWidget):
 
         self.export_folder = r"export/"
 
+        self.vertical_contours = None
+        self.horizontal_contours = None
+
+        self.horizontal_lines = None
+
+        self.horizontal_image = None
+        self.vertical_image = None
+        self.horizontal_lines_image = None
+        self.vertical_lines_image = None
+
         self.loadImageButton = QPushButton("Load Image")
         self.loadImageButton.clicked.connect(self.activate_get_image)
 
-        self.horizontal_contour_min_length = 12
-        self.horizontal_contour_length_slider = SliderDuo("Minimal horizontal contour length",
-                                                          self.horizontal_contour_min_length, 1, 60)
-        self.horizontal_contour_length_slider.changed.connect(self.update_horizontal_contour_min_length)
-
-        self.horizontal_contour_gap = 4
-        self.horizontal_contour_gap_slider = SliderDuo("Horizontal contour gap", self.horizontal_contour_gap, 1, 20)
-        self.horizontal_contour_gap_slider.changed.connect(self.update_horizontal_contour_gap)
-
-        self.find_horizontal_contours_button = QPushButton("Find Horizontal Contours")
-        self.find_horizontal_contours_button.clicked.connect(self.activate_find_horizontal_contours)
-
-        self.horizontal_line_segments_gap = 300
-        self.horizontal_line_segments_gap_slider = SliderDuo("Horizontal line segment gap",
-                                                             self.horizontal_line_segments_gap, 100, 500)
-        self.horizontal_line_segments_gap_slider.changed.connect(self.update_horizontal_line_segments_gap)
-
-        self.horizontal_line_segment_size = 50
-        self.horizontal_line_segment_size_slider = SliderDuo("Horizontal line segment length",
-                                                             self.horizontal_line_segment_size, 1, 800)
-        self.horizontal_line_segment_size_slider.changed.connect(self.update_horizontal_line_segment_size)
-
-        self.horizontal_lines_min_size = 650
-        self.horizontal_lines_min_size_slider = SliderDuo("Horizontal lines minimal size",
-                                                          self.horizontal_lines_min_size, 60, 3000)
-        self.horizontal_lines_min_size_slider.changed.connect(self.update_horizontal_lines_min_size)
+        self.horizontal_contour_min_length = 600
+        self.horizontal_contour_min_length_slider = SliderDuo("Minimal horizontal contour length",
+                                                              self.horizontal_contour_min_length, 100, 4000)
+        self.horizontal_contour_min_length_slider.changed.connect(self.update_horizontal_contour_min_length)
 
         self.find_horizontal_lines_button = QPushButton("Find Horizontal Lines")
         self.find_horizontal_lines_button.clicked.connect(self.activate_find_horizontal_lines)
 
-        self.vertical_contour_min_length = 14
-        self.vertical_contour_length_slider = SliderDuo("Minimal vertical contour length",
-                                                        self.vertical_contour_min_length, 1, 60)
-        self.vertical_contour_length_slider.changed.connect(self.update_vertical_contour_min_length)
+        self.vertical_contour_min_length = 20
+        self.vertical_contour_min_length_slider = SliderDuo("Minimal vertical contour length",
+                                                            self.vertical_contour_min_length, 10, 3000)
+        self.vertical_contour_min_length_slider.changed.connect(self.update_vertical_contour_min_length)
 
-        self.vertical_contour_gap = 1
-        self.vertical_contour_gap_slider = SliderDuo("Vertical contour gap", self.vertical_contour_gap, 1, 20)
-        self.vertical_contour_gap_slider.changed.connect(self.update_vertical_contour_gap)
+        self.find_vertical_lines_button = QPushButton("Find Vertical Lines")
+        self.find_vertical_lines_button.clicked.connect(self.activate_find_vertical_lines)
 
-        self.find_vertical_contours_button = QPushButton("Find Vertical Contours")
-        self.find_vertical_contours_button.clicked.connect(self.activate_find_vertical_contours)
-
-        self.vertical_lines_min_size = 10
-        self.vertical_lines_min_size_slider = SliderDuo("Vertical lines minimal size",
-                                                        self.vertical_lines_min_size, 1, 500)
-        self.vertical_lines_min_size_slider.changed.connect(self.update_vertical_lines_min_size)
-
-        self.vertical_lines_merge_size = 100
-        self.vertical_lines_merge_size_slider = SliderDuo("Vertical lines merge length",
-                                                          self.vertical_lines_merge_size, 10, 1000)
-        self.vertical_lines_merge_size_slider.changed.connect(self.update_vertical_lines_merge_size)
-
-        self.horizontal_lines_viewer = None
-
-        self.vertical_contour_viewer = None
-        self.vertical_lines_viewer = None
-
-        self.find_tables_button = QPushButton("Find Lines")
-        self.find_tables_button.clicked.connect(self.activate_find_vertical_lines)
+        self.find_tables_button = QPushButton("Find Tables")
+        self.find_tables_button.clicked.connect(self.activate_find_tables)
 
         VBlayout = QVBoxLayout(self)
         # VBlayout.addWidget(self.viewer)
         # HBlayout = QHBoxLayout()
         VBlayout.addWidget(self.loadImageButton)
 
-        VBlayout.addWidget(self.horizontal_contour_length_slider)
-        VBlayout.addWidget(self.horizontal_contour_gap_slider)
-        VBlayout.addWidget(self.find_horizontal_contours_button)
-
-        VBlayout.addWidget(self.horizontal_line_segments_gap_slider)
-        VBlayout.addWidget(self.horizontal_line_segment_size_slider)
-        VBlayout.addWidget(self.horizontal_lines_min_size_slider)
+        VBlayout.addWidget(self.horizontal_contour_min_length_slider)
         VBlayout.addWidget(self.find_horizontal_lines_button)
 
-        VBlayout.addWidget(self.vertical_contour_length_slider)
-        VBlayout.addWidget(self.vertical_contour_gap_slider)
-        VBlayout.addWidget(self.find_vertical_contours_button)
-
+        VBlayout.addWidget(self.vertical_contour_min_length_slider)
+        VBlayout.addWidget(self.find_vertical_lines_button)
         VBlayout.addWidget(self.find_tables_button)
+        self.table = None
 
-        VBlayout.addWidget(self.vertical_lines_min_size_slider)
-        VBlayout.addWidget(self.vertical_lines_merge_size_slider)
-
-        self.table = False
-
+        self.image_viewer = None
+        self.horizontal_viewer = None
+        self.vertical_viewer = None
+        self.table_viewer = None
         # HBlayout.setAlignment(Qt.AlignLeft)
         # HBlayout.addWidget(self.loadImageButton)
         # VBlayout.addLayout(HBlayout)
@@ -633,45 +606,17 @@ class DialogApp(QWidget):
             self.editPixInfo.setText('%d, %d' % (pos.x(), pos.y()))
     """
 
-    def update_horizontal_line_segments_gap(self, value):
-        self.horizontal_line_segments_gap = value
-
-    def update_horizontal_line_segment_size(self, value):
-        self.horizontal_line_segment_size = value
-
-    def update_vertical_lines_merge_size(self, value):
-        self.vertical_lines_merge_size = value
-
-    def update_horizontal_lines_min_size(self, value):
-        self.horizontal_lines_min_size = value
-
-    def update_horizontal_contour_min_length(self, value):
+    def update_horizontal_contour_min_length(self,value):
         self.horizontal_contour_min_length = value
 
-    def update_vertical_lines_min_size(self, value):
-        self.vertical_lines_min_size = value
-
-    def update_horizontal_contour_gap(self, value):
-        self.horizontal_contour_gap = value
-
-    def update_vertical_contour_min_length(self, value):
+    def update_vertical_contour_min_length(self,value):
         self.vertical_contour_min_length = value
 
-    def update_vertical_contour_gap(self, value):
-        self.vertical_contour_gap = value
-
     def initiate_worker(self):
-        angle = None if self.min_horizontal_area is None else self.min_horizontal_area['angle']
-        horizontal_lines = None if self.min_horizontal_area is None else self.min_horizontal_area['areas']
-        self.worker = Worker(self.image, self.classified_contours,
-                             self.horizontal_contour_min_length, self.horizontal_contour_gap,
-                             self.horizontal_image,
-                             self.horizontal_line_segments_gap, self.horizontal_line_segment_size,
-                             self.horizontal_lines_min_size, horizontal_lines,
-                             self.vertical_contour_min_length, self.vertical_contour_gap,
-                             self.vertical_image, angle,
-                             self.vertical_lines_min_size, self.vertical_lines_merge_size,
-                             )
+        self.worker = Worker(self.horizontal_contours, self.horizontal_contour_min_length, self.vertical_contours,
+                             self.vertical_contour_min_length, self.image, self.horizontal_lines,
+                             self.horizontal_lines_image, self.vertical_lines_image)
+
         self.worker_thread = QThread()
         self.worker.moveToThread(self.worker_thread)
         self.worker.finished.connect(self.worker_thread.quit)
@@ -712,31 +657,14 @@ class DialogApp(QWidget):
             f.write(content)
             f.close()
 
-    def image_processed(self, classified_contours, thinned, binarized, denoised, gray):
-        self.classified_contours = classified_contours
-        self.thinned = thinned
-        self.binarized = binarized
-        self.denoised = denoised
-        self.gray = gray
+    def image_processed(self, horizontal_contours, vertical_contours):
+        self.horizontal_contours = horizontal_contours
+        self.vertical_contours = vertical_contours
         QMessageBox.about(self, "Title", "Finished Processing")
+        self.image_viewer = create_viewer(self.image,"Image")
         # self.viewer.setPhoto(QPixmap( QPixmap.fromImage(toQImage(thinned))))
-        self.save_image(thinned, "thinned")
-        self.save_image(binarized, "binarized")
-        self.save_image(denoised, "denoised")
-        self.save_image(gray, "gray")
-        self.thinned_viewer = create_viewer(thinned, "thinned")
-        self.horizontal_contours_viewer = None
-        self.horizontal_lines_viewer = None
-        self.horizontal_image = None
-
-        self.vertical_lines_viewer = None
-        self.vertical_contour_viewer = None
-        self.vertical_image = None
-
-        self.min_horizontal_area = None
-
         self.operationLock.unlock()
-
+    """
     def activate_find_vertical_contours(self):
         if not self.operationLock.tryLock():
             return
@@ -754,10 +682,16 @@ class DialogApp(QWidget):
         QMessageBox.about(self, "Title", "Vertical Contours found")
         self.vertical_contour_viewer = create_viewer(self.vertical_image, "Vertical Contours")
         self.operationLock.unlock()
+    """
 
     def activate_find_vertical_lines(self):
         if not self.operationLock.tryLock():
             return
+        if self.horizontal_contours is None:
+            QMessageBox.about(self, "Title", "You have to load image first")
+            self.operationLock.unlock()
+            return
+        """
         if self.min_horizontal_area is None:
             QMessageBox.about(self, "Title", "You have to find horizontal lines first")
             self.operationLock.unlock()
@@ -766,13 +700,21 @@ class DialogApp(QWidget):
             QMessageBox.about(self, "Title", "You have to find vertical contours first")
             self.operationLock.unlock()
             return
+        """
         self.initiate_worker()
         self.worker_thread.started.connect(self.worker.find_vertical_lines)
-        self.worker.processed6.connect(self.finished_finding_vertical_lines)
+        self.worker.processed_2_images.connect(self.finished_finding_vertical_lines)
         self.worker_thread.start()
 
-    def finished_finding_vertical_lines(self, table):
+    def finished_finding_vertical_lines(self, vertical_lines_image, image):
 
+        self.vertical_lines_image = vertical_lines_image
+        self.vertical_image = image
+        self.save_image(self.vertical_image, "vertical-contours-" + str(self.vertical_contour_min_length))
+        self.save_image(self.image, "vertical-lines-" + str(self.vertical_contour_min_length))
+        self.operationLock.unlock()
+        self.vertical_viewer = create_viewer(image, "vertical contours")
+        """
         self.save_variable(table,"table")
         self.table = table
         used_colors = []
@@ -793,29 +735,9 @@ class DialogApp(QWidget):
                         cv2.line(img, cell[2], cell[3], color, 2)
             img = rotate(img, 0 - self.min_horizontal_area['angle'])
             self.save_image(img,"tables-detected")
-        """
-        self.min_vertical_area = min_area
-        self.vertical_image = image
-        QMessageBox.about(self, "Title", "Found Vertical Lines")
-        print_str = str(self.vertical_contour_min_length) + "-" + \
-                    str(self.vertical_contour_gap) + "_" + str(min_area['angle'])
-
-        print_str_2 = "-" + str(self.vertical_lines_min_size) + "-" + str(self.vertical_lines_merge_size)
-
-        self.save_image(image,
-                        "vertical-image" + str(self.vertical_contour_min_length) + "-" + str(self.vertical_contour_gap))
-        self.save_image(min_area['image'], "vertical-image" + print_str)
-
-        self.save_variable(min_area['areas'], "vertical-line-areas-" + print_str)
-        self.vertical_viewer = create_viewer(min_area['image'], "Vertical-Lines - " + print_str)
-
-        self.save_variable(min_area['horizontal_areas'], "vertical-line-horizontal-areas" + print_str + print_str_2)
-        self.save_image(min_area['fixed_image'], "fixed-vertical-lines" + print_str + print_str_2)
-        self.vertical_lines_viewer = create_viewer(min_area['fixed_image'],
-                                                   "fixed-vertical-lines" + print_str + print_str_2)
-        """
         self.operationLock.unlock()
-
+    """
+    """
     def activate_find_horizontal_contours(self):
         if not self.operationLock.tryLock():
             return
@@ -827,7 +749,7 @@ class DialogApp(QWidget):
         self.worker_thread.started.connect(self.worker.find_horizontal_contours)
         self.worker.processed1.connect(self.finished_finding_horizontal_contours)
         self.worker_thread.start()
-
+    
     def finished_finding_horizontal_contours(self, image):
         self.horizontal_image = image
         QMessageBox.about(self, "Title", "Horizontal Contours found")
@@ -836,38 +758,31 @@ class DialogApp(QWidget):
         self.vertical_lines_viewer = None
 
         self.operationLock.unlock()
-
+    """
     def activate_find_horizontal_lines(self):
         if not self.operationLock.tryLock():
             return
-        if self.thinned is None:
+        if self.horizontal_contours is None:
             QMessageBox.about(self, "Title", "You have to load image first")
-            self.operationLock.unlock()
-            return
-        if self.horizontal_image is None:
-            QMessageBox.about(self, "Title", "You have to find horizontal contours first")
             self.operationLock.unlock()
             return
         self.initiate_worker()
         self.worker_thread.started.connect(self.worker.find_horizontal_lines)
-        self.worker.processed5.connect(self.finished_finding_horizontal_lines)
+        self.worker.processed_lines_image.connect(self.finished_finding_horizontal_lines)
         self.worker_thread.start()
 
-    def finished_finding_horizontal_lines(self, min_area):
-        self.min_horizontal_area = min_area
+    def finished_finding_horizontal_lines(self, horizontal_lines, horizontal_lines_image,image):
+        self.horizontal_image = image
+        self.horizontal_lines = horizontal_lines
+        self.horizontal_lines_image = horizontal_lines_image
+        self.save_image(image, "horizontal-lines-found")
+        self.operationLock.unlock()
+        self.horizontal_viewer = create_viewer(image, "Horizontal Lines Detected")
         QMessageBox.about(self, "Title", "Found Horizontal Lines")
         # print(str(self.horizontal_contour_min_length))
         # print(str(self.horizontal_contour_gap))
 
-        print_str = str(self.horizontal_contour_min_length) + "-" + \
-                    str(self.horizontal_contour_gap) + "_" + str(min_area['angle'])
-        print_str_2 = "-" + str(self.horizontal_line_segments_gap) + "-" + str(self.horizontal_line_segment_size) + \
-                      "-" + str(self.horizontal_lines_min_size)
-
-        self.save_image(min_area['image'], "horizontal-image-" + print_str)
-
-        self.save_variable(min_area['areas'], "horizontal-line-areas-" + print_str)
-
+        """
         graph = horizontal_projection_graph(min_area['projection'], self.horizontal_image.shape)
         graph = cv2.cvtColor(graph, cv2.COLOR_GRAY2BGR)
         second_image = cv2.cvtColor(min_area['image'], cv2.COLOR_GRAY2BGR)
@@ -884,6 +799,36 @@ class DialogApp(QWidget):
         # self.save_variable(min_area['vertical_areas'], "horizontal-lines-vertical-areas-" + print_str + print_str_2)
         self.horizontal_lines_viewer = create_viewer(min_area['fixed_image'],
                                                      "Fixed Horizontal Lines " + print_str + print_str_2)
+        """
+
+    def activate_find_tables(self):
+        if not self.operationLock.tryLock():
+            return
+        if self.horizontal_contours is None:
+            QMessageBox.about(self, "Title", "You have to load image first")
+            self.operationLock.unlock()
+            return
+        if self.horizontal_lines_image is None:
+            QMessageBox.about(self, "Title", "You have to find horizontal lines")
+            self.operationLock.unlock()
+            return
+        if self.vertical_lines_image is None:
+            QMessageBox.about(self, "Title", "You have to find vertical lines")
+            self.operationLock.unlock()
+            return
+
+        self.initiate_worker()
+        self.worker_thread.started.connect(self.worker.find_tables)
+        self.worker.processed_list_image.connect(self.finished_finding_tables)
+        self.worker_thread.start()
+
+    def finished_finding_tables(self, table, image):
+        self.table_viewer = create_viewer(image, "Higlated Table")
+        self.save_image(image, "table-" + str(self.horizontal_contour_min_length) + "-" +
+                        str(self.vertical_contour_min_length) + "-")
+        self.save_variable(table, "table-" +str(self.horizontal_contour_min_length) + "-" +
+                        str(self.vertical_contour_min_length) + "-" )
+        self.table = table
         self.operationLock.unlock()
 
 
@@ -891,51 +836,37 @@ class Worker(QObject):
     processed1 = pyqtSignal(np.ndarray)
     processed2 = pyqtSignal(np.ndarray, np.ndarray)
     processed3 = pyqtSignal(np.ndarray, np.ndarray, np.ndarray)
-
-    processed4 = pyqtSignal(list, np.ndarray, np.ndarray, np.ndarray, np.ndarray)
+    processed4 = pyqtSignal(list, list)
     processed5 = pyqtSignal(dict)
     processed6 = pyqtSignal(list)
+
+    processed_lines_image = pyqtSignal(np.ndarray, np.ndarray, np.ndarray)
+    processed_2_images = pyqtSignal(np.ndarray,np.ndarray)
+    processed_list_image = pyqtSignal(list, np.ndarray)
     finished = pyqtSignal()
 
-    def __init__(self, image, classified_contours,
-                 horizontal_contour_min_length, horizontal_contour_gap, horizontal_image,
-                 horizontal_line_segments_gap, horizontal_line_segment_size,
-                 horizontal_lines_min_size, horizontal_lines,
-                 vertical_contour_min_length, vertical_contour_gap, vertical_image, angle_for_vertical_lines,
-                 vertical_lines_min_size, vertical_lines_merge_size):
+    def __init__(self, horizontal_contours, horizontal_contour_min_size, vertical_contours, vertical_contours_size,
+                 image, horizontal_lines, horizontal_lines_image, vertical_lines_image):
         super().__init__()
         self.image = image
         self.image_height = image.shape[0]
         self.image_width = image.shape[1]
-        self.classified_contours = classified_contours
+        self.horizontal_contours = horizontal_contours
+        self.horizontal_contour_min_size = horizontal_contour_min_size
 
-        self.horizontal_contour_min_length = horizontal_contour_min_length
-        self.horizontal_contour_gap = horizontal_contour_gap
-
-        self.horizontal_image = horizontal_image
-
-        self.horizontal_line_segments_gap = horizontal_line_segments_gap
-        self.horizontal_line_segment_size = horizontal_line_segment_size
-        self.horizontal_lines_min_size = horizontal_lines_min_size
+        self.vertical_contours = vertical_contours
+        self.vertical_contours_size = vertical_contours_size
 
         self.horizontal_lines = horizontal_lines
-
-        self.vertical_contour_min_length = vertical_contour_min_length
-        self.vertical_contour_gap = vertical_contour_gap
-
-        self.vertical_image = vertical_image
-        self.angle_for_vertical_lines = angle_for_vertical_lines
-
-        self.vertical_lines_min_size = vertical_lines_min_size
-        self.vertical_lines_merge_size = vertical_lines_merge_size
-
+        self.vertical_lines_image = vertical_lines_image
+        self.horizontal_lines_image = horizontal_lines_image
 
     def preprocess_image(self):
         if self.image is not None:
-            classified_contours, thinned, binarized, denoised, gray = preprocess_img(self.image)
-            self.processed4.emit(classified_contours, thinned, binarized, denoised, gray)
+            horizontal_contours, vertical_contours = preprocess_img(self.image)
+            self.processed4.emit(horizontal_contours, vertical_contours)
             self.finished.emit()
-
+    """
     def find_vertical_contours(self):
         tmp_image_v = create_allowed_direction_image(self.classified_contours, self.vertical_contour_min_length,
                                                      self.vertical_contour_gap,
@@ -943,13 +874,29 @@ class Worker(QObject):
                                                      (self.image_height, self.image_width))
         self.processed1.emit(tmp_image_v)
         self.finished.emit()
+    """
 
     def find_vertical_lines(self):
+
+        img = np.zeros((self.image_height,self.image_width), np.uint8)
+        filtered_vertical_contours = []
+        for contour in self.vertical_contours:
+            if contour.shape[0] > self.vertical_contours_size:
+                filtered_vertical_contours.append(contour)
+
+        cv2.drawContours(img,filtered_vertical_contours,-1,(255,255,255))
+
+        img2 = np.copy(self.image)
+        cv2.drawContours(img2,filtered_vertical_contours,-1,(255,0,0),4)
+        #first is just drawn vertical controures, second is contoures drawn contoures onto original image
+        self.processed_2_images.emit(img,img2)
+        self.finished.emit()
+
+    def find_tables(self):
         table = []
-        rotated_vertical_image = rotate(self.vertical_image, self.angle_for_vertical_lines)
         available_area_minimum = 80
-        minimum_table_width = 200
-        overlap_margin = 100
+        minimum_table_width = 100
+        overlap_margin = 50
         for i in range(0, self.horizontal_lines.shape[0] - 1):
             table_line = []
             j = i+1
@@ -1001,19 +948,21 @@ class Worker(QObject):
                 overlap = np.array([overlap[0], tmp_overlap_1, tmp_overlap_2], np.uint32)
 
                 end_row = self.horizontal_lines[overlap[0]][1]
-                tmp_image = rotated_vertical_image[self.horizontal_lines[i][0]: end_row, tmp_overlap_1: tmp_overlap_2+1]
+                tmp_image = self.vertical_lines_image[self.horizontal_lines[i][0]: end_row, tmp_overlap_1: tmp_overlap_2+1]
 
                 vert_proj = vertical_projection(tmp_image)
-                vert_areas = find_areas(vert_proj,10,1)
+                vert_areas = find_areas(vert_proj,17,1)
                 if vert_areas.shape[0] == 0:
                     continue
-                tmp_image_highlated = np.copy(rotated_vertical_image)
+                """
+                tmp_image_highlated = np.copy(self.vertical_lines_image)
                 tmp_image_highlated = cv2.cvtColor(tmp_image_highlated, cv2.COLOR_GRAY2BGR)
                 for v in vert_areas:
                     cv2.line(tmp_image_highlated, (v[0]+overlap[1],self.horizontal_lines[i][0]), (v[0]+overlap[1], end_row),(255,0,0),2)
                     cv2.line(tmp_image_highlated, (v[1]+overlap[1],self.horizontal_lines[i][0]) , (v[1]+overlap[1], end_row), (0,255,0),2)
                 cv2.imwrite("export/tmp-image" + str(i) + "-" + str(overlap[0]) + "-" + str(tmp_overlap_1) + "-" + str(
                     tmp_overlap_2) + ".jpg", tmp_image_highlated)
+                """
                 vert_areas_tmp = []
 
 
@@ -1025,29 +974,34 @@ class Worker(QObject):
                     if tmp_horizontal_areas.shape[0] == 0:
                         continue
                     else:
-                        vert_areas_tmp.append(area)
+                        if tmp_horizontal_areas.shape[0] == 1:
+                            horizontal_area_length = tmp_horizontal_areas[0,2]
+                        else:
+                            horizontal_area_length = np.sum(tmp_horizontal_areas[:,2])
+                        if horizontal_area_length >= int(self.horizontal_lines[overlap[0]][0] - self.horizontal_lines[i][1] - 5):
+                            vert_areas_tmp.append(area)
 
                 vert_areas = np.array(vert_areas_tmp)
 
                 for j in range(0, vert_areas.shape[0]-1):
-                    pt_1_y = self.horizontal_lines[i][0]
-                    pt_2_y = self.horizontal_lines[i][0]
+                    pt_1_y = self.horizontal_lines[i][1]
+                    pt_2_y = self.horizontal_lines[i][1]
 
-                    pt_3_y = end_row
-                    pt_4_y = end_row
+                    pt_3_y = self.horizontal_lines[overlap[0]][0]
+                    pt_4_y = self.horizontal_lines[overlap[0]][0]
 
-                    rotated_horizontal_image = rotate(self.horizontal_image,self.angle_for_vertical_lines)
-                    sliced_image = rotated_horizontal_image[self.horizontal_lines[i][0]: end_row+1,
+                    #rotated_horizontal_image = rotate(self.horizontal_image,self.angle_for_vertical_lines)
+                    sliced_image = self.horizontal_lines_image[self.horizontal_lines[i][0]: end_row+1,
                                    int(overlap[1] + vert_areas[j][0]): int(overlap[1] + vert_areas[j][1] + 1)]
 
                     sliced_horizontal_proj = horizontal_projection(sliced_image)
 
                     sliced_areas = find_areas(sliced_horizontal_proj,1,1)
                     if sliced_areas.shape[0] > 0:
-                        pt_1_y = sliced_areas[0][0] + self.horizontal_lines[i][0]
-                        pt_3_y = sliced_areas[-1][1] + self.horizontal_lines[i][0]
+                        pt_1_y = sliced_areas[0][1] + self.horizontal_lines[i][0]
+                        pt_3_y = sliced_areas[-1][0] + self.horizontal_lines[i][0]
 
-                    sliced_image = rotated_horizontal_image[self.horizontal_lines[i][0]: end_row,
+                    sliced_image = self.horizontal_lines_image[self.horizontal_lines[i][0]: end_row,
                                    vert_areas[j+1][0]: vert_areas[j+1][1]+1]
 
                     sliced_horizontal_proj = horizontal_projection(sliced_image)
@@ -1055,60 +1009,60 @@ class Worker(QObject):
                     sliced_areas = find_areas(sliced_horizontal_proj, 1, 1)
 
                     if sliced_areas.shape[0] > 0:
-                        pt_2_y = sliced_areas[0][0] + self.horizontal_lines[i][0]
-                        pt_4_y = sliced_areas[-1][1] + self.horizontal_lines[i][0]
+                        pt_2_y = sliced_areas[0][1] + self.horizontal_lines[i][0]
+                        pt_4_y = sliced_areas[-1][0] + self.horizontal_lines[i][0]
 
                     if pt_1_y > self.horizontal_lines[i][1] or pt_1_y < self.horizontal_lines[i][0]:
-                        pt_1_y = self.horizontal_lines[i][0]
+                        pt_1_y = self.horizontal_lines[i][1]
 
                     if pt_2_y > self.horizontal_lines[i][1] or pt_2_y < self.horizontal_lines[i][0]:
-                        pt_2_y = self.horizontal_lines[i][0]
+                        pt_2_y = self.horizontal_lines[i][1]
 
                     if pt_3_y < self.horizontal_lines[overlap[0]][0] or pt_3_y > end_row:
-                        pt_3_y = end_row
+                        pt_3_y = self.horizontal_lines[overlap[0]][0]
 
                     if pt_4_y < self.horizontal_lines[overlap[0]][0] or pt_4_y > end_row:
-                        pt_4_y = end_row
+                        pt_4_y = self.horizontal_lines[overlap[0]][0]
 
 
                     # try to recover x coordinates
 
-                    pt_1_x = vert_areas[j][0] + overlap[1]
-                    pt_3_x = vert_areas[j][0] + overlap[1]
+                    pt_1_x = vert_areas[j][1] + overlap[1]
+                    pt_3_x = vert_areas[j][1] + overlap[1]
 
-                    pt_2_x = vert_areas[j+1][1] + overlap[1]
-                    pt_4_x = vert_areas[j+1][1] + overlap[1]
+                    pt_2_x = vert_areas[j+1][0] + overlap[1]
+                    pt_4_x = vert_areas[j+1][0] + overlap[1]
 
-                    sliced_image = rotated_vertical_image[self.horizontal_lines[i][0]: self.horizontal_lines[i][1],
+                    sliced_image = self.vertical_lines_image[self.horizontal_lines[i][0]: self.horizontal_lines[i][1],
                                    vert_areas[j][0]: vert_areas[j + 1][1] + 1]
 
                     sliced_vertical_projection = vertical_projection(sliced_image)
                     sliced_areas = find_areas(sliced_vertical_projection, 1,1)
                     if sliced_areas.shape[0] > 0:
-                        pt_1_x = sliced_areas[0][0] + vert_areas[j][0] + overlap[1]
-                        pt_2_x = sliced_areas[-1][1] + vert_areas[j][0] + overlap[1]
+                        pt_1_x = sliced_areas[0][1] + vert_areas[j][0] + overlap[1]
+                        pt_2_x = sliced_areas[-1][0] + vert_areas[j][0] + overlap[1]
 
-                    sliced_image = rotated_vertical_image[self.horizontal_lines[overlap[0]][0]: end_row,
+                    sliced_image = self.vertical_lines_image[self.horizontal_lines[overlap[0]][0]: end_row,
                                    vert_areas[j][0]: vert_areas[j + 1][1] + 1]
 
                     sliced_vertical_projection = vertical_projection(sliced_image)
                     sliced_areas = find_areas(sliced_vertical_projection, 1, 1)
 
                     if sliced_areas.shape[0] > 0:
-                        pt_3_x = sliced_areas[0][0] + vert_areas[j][0] + overlap[1]
-                        pt_4_x = sliced_areas[-1][1] + vert_areas[j][0] + overlap[1]
+                        pt_3_x = sliced_areas[0][1] + vert_areas[j][0] + overlap[1]
+                        pt_4_x = sliced_areas[-1][0] + vert_areas[j][0] + overlap[1]
 
                     if pt_1_x > (overlap[1] + vert_areas[j][1]) or pt_1_x < (overlap[1] + vert_areas[j][0]):
-                        pt_1_x = overlap[1] + vert_areas[j][0]
+                        pt_1_x = overlap[1] + vert_areas[j][1]
 
                     if pt_2_x < (overlap[1] + vert_areas[j + 1][0]) or pt_2_x > (overlap[1] + vert_areas[j + 1][1]):
-                        pt_2_x = overlap[1] + vert_areas[j + 1][1]
+                        pt_2_x = overlap[1] + vert_areas[j + 1][0]
 
                     if pt_3_x > (overlap[1] + vert_areas[j][1]) or pt_3_x < (overlap[1] + vert_areas[j][0]):
-                        pt_3_x = overlap[1] + vert_areas[j][0]
+                        pt_3_x = overlap[1] + vert_areas[j][1]
 
                     if pt_4_x < (overlap[1] + vert_areas[j + 1][0]) or pt_4_x > (overlap[1] + vert_areas[j + 1][1]):
-                        pt_4_x = overlap[1] + vert_areas[j + 1][1]
+                        pt_4_x = overlap[1] + vert_areas[j + 1][0]
 
                     table_line.append(
                         [(pt_1_x, pt_1_y), (pt_2_x, pt_2_y), (pt_3_x, pt_3_y), (pt_4_x, pt_4_y), pt_2_x - pt_1_x,
@@ -1116,9 +1070,26 @@ class Worker(QObject):
 
             table.append(table_line)
 
-        self.processed6.emit(table)
-        self.finished.emit()
+        used_colors = []
+        if len(table) > 0:
+            img = np.copy(self.image)
+            #img = rotate(img, self.min_horizontal_area['angle'])
+            for table_line in table:
 
+                if len(table_line) > 0:
+                    color = list(np.random.random(size=3) * 256)
+                    while color in used_colors:
+                        color = list(np.random.random(size=3) * 256)
+                    used_colors.append(color)
+                    for cell in table_line:
+                        cv2.line(img, cell[0], cell[1], color, 2)
+                        cv2.line(img, cell[0], cell[2], color, 2)
+                        cv2.line(img, cell[1], cell[3], color, 2)
+                        cv2.line(img, cell[2], cell[3], color, 2)
+
+        self.processed_list_image.emit(table,img)
+        self.finished.emit()
+    """
     def find_horizontal_contours(self):
         tmp_image_h = create_allowed_direction_image(self.classified_contours, self.horizontal_contour_min_length,
                                                      self.horizontal_contour_gap,
@@ -1126,8 +1097,10 @@ class Worker(QObject):
                                                      (self.image_height, self.image_width))
         self.processed1.emit(tmp_image_h)
         self.finished.emit()
+    """
 
     def find_horizontal_lines(self):
+        """
         tmp_image_h = self.horizontal_image
         min_area = find_horizontal_areas(tmp_image_h, -2.0, self.horizontal_line_segments_gap,
                                          self.horizontal_line_segment_size, self.horizontal_lines_min_size)
@@ -1144,54 +1117,7 @@ class Worker(QObject):
         # for area in min_area['areas']:
         horizontal_area_vertical_areas = []
         img2 = np.zeros_like(min_area['image'])
-        """
-        for i in range(0, len(min_area['vertical_areas'])):
-            merged_vert_areas = []
 
-            start_index = 0
-            for j in range(0, min_area['vertical_areas'][i].shape[0] - 1):
-                print(str(min_area['vertical_areas'][i][j + 1][0] - min_area['vertical_areas'][i][j][1]))
-                gap = min_area['vertical_areas'][i][j + 1][0] - min_area['vertical_areas'][i][j][1]
-                if gap >= self.horizontal_lines_merge_size:
-                    if start_index != j:
-
-                        merged_vert_areas.append(np.array(
-                            [min_area['vertical_areas'][i][start_index][0], min_area['vertical_areas'][i][j][1],
-                             min_area['vertical_areas'][i][j][1] - min_area['vertical_areas'][i][start_index][0]]))
-                        
-                        cv2.line(img2, (vert_areas[start_index][1],area[0]),
-                                 (vert_areas[i][0], area[0]), (255,255,255),1)
-                        
-
-                    else:
-                        merged_vert_areas.append(min_area['vertical_areas'][i][j])
-                    start_index = j + 1
-
-            if start_index < min_area['vertical_areas'][i].shape[0] - 1:
-                merged_vert_areas.append(np.array([min_area['vertical_areas'][i][start_index][0],
-                                                   min_area['vertical_areas'][i][-1][1],
-                                                   min_area['vertical_areas'][i][-1][1] -
-                                                   min_area['vertical_areas'][i][start_index][0]]))
-                
-                cv2.line(img2, (vert_areas[start_index][1], area[0]),
-                         (vert_areas[-1][0], area[0]), (255, 255, 255), 1)
-                 
-            else:
-                merged_vert_areas.append(min_area['vertical_areas'][i][-1])
-
-            merged_vert_areas = np.array(merged_vert_areas, np.uint32)
-            horizontal_area_vertical_areas.append(merged_vert_areas)
-            min_area['areas'][i][3] = np.sum(merged_vert_areas[:, 2])
-
-        min_area['vertical_areas'] = horizontal_area_vertical_areas
-        
-        for i in range(0, len(min_area['areas'])):
-            start_row = min_area['areas'][i][0]
-            end_row = min_area['areas'][i][1]
-            row_index = start_row + int((end_row - start_row) / 2)
-            for vert_area in min_area['vertical_areas'][i]:
-                cv2.line(img2, (vert_area[0], row_index), (vert_area[1], row_index), (255, 255, 255), 4)
-        """
 
         change_margin = 150
 
@@ -1209,7 +1135,41 @@ class Worker(QObject):
 
         min_area['fixed_image'] = img2
         # cv2.imwrite("export/fixed_lines.jpg",img2)
-        self.processed5.emit(min_area)
+        """
+        img = np.zeros((self.image_height,self.image_width), np.uint8)
+        filtered_horizontal_contours = []
+        for contour in self.horizontal_contours:
+            if contour.shape[0] > self.horizontal_contour_min_size:
+                filtered_horizontal_contours.append(contour)
+
+        cv2.drawContours(img, filtered_horizontal_contours, -1, (255, 255, 255))
+
+        horizontal_proj = horizontal_projection(img)
+        horizontal_areas = find_areas(horizontal_proj, 10, 1)
+        horizontal_line_areas = []
+        for area in horizontal_areas:
+            sliced_vertical_img = img[area[0]:area[1], :]
+            vert_proj = vertical_projection(sliced_vertical_img)
+            vert_areas = find_areas(vert_proj,2,1)
+            horizontal_line_areas.append(np.append(area, [vert_areas[0][0], vert_areas[-1][1]]))
+        horizontal_line_areas = np.array(horizontal_line_areas)
+
+        start_point = horizontal_line_areas[np.argsort(horizontal_line_areas[:,3])][0,3]
+        end_point = horizontal_line_areas[np.argsort(horizontal_line_areas[:,4])][-1,4]
+
+        for area in horizontal_line_areas:
+            if area[3] < (start_point + 100):
+                area[3] = start_point
+            if area[4] < (end_point - 100):
+                area[4] = end_point
+
+        img2 = np.copy(self.image)
+        for area in horizontal_line_areas:
+            cv2.line(img2,(area[3], area[0]), (area[4], area[0]), (255,0,0),4)
+            cv2.line(img2,(area[3],area[1]), (area[4], area[1]), (0,255,0),4)
+
+        self.processed_lines_image.emit(horizontal_line_areas, img, img2)
+        #self.processed5.emit(min_area)
         self.finished.emit()
 
 
