@@ -121,8 +121,10 @@ def preprocess_img(image: np.ndarray):
     # dilated = cv2.dilate(thinned, np.ones((1,10),np.uint8))
     # thinned2 = cv2.ximgproc.thinning(dilated)
     # thinned = cv2.dilate(thinned,np.ones((6,1),np.uint8))
-    contours_vertical, hierarchy_horizontal = cv2.findContours(img_vertical_binarized, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-    contours_horizontal, hierarchy_horizontal = cv2.findContours(img_horizontal_binarized, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    contours_vertical, hierarchy_horizontal = cv2.findContours(img_vertical_binarized, cv2.RETR_LIST,
+                                                               cv2.CHAIN_APPROX_NONE)
+    contours_horizontal, hierarchy_horizontal = cv2.findContours(img_horizontal_binarized, cv2.RETR_LIST,
+                                                                 cv2.CHAIN_APPROX_NONE)
 
     # classified_contour_image = np.zeros((img.shape[0], img.shape[1]), np.uint8)
     return contours_horizontal, contours_vertical
@@ -291,7 +293,6 @@ def contour_classification(contours):
         classified_fragments.append(classfied_fragment)
 
         classified_contours.append(classified_fragments)
-
     return classified_contours
 
 
@@ -948,13 +949,40 @@ class Worker(QObject):
                 overlap = np.array([overlap[0], tmp_overlap_1, tmp_overlap_2], np.uint32)
 
                 end_row = self.horizontal_lines[overlap[0]][1]
-                tmp_image = self.vertical_lines_image[self.horizontal_lines[i][0]: end_row, tmp_overlap_1: tmp_overlap_2+1]
 
-                vert_proj = vertical_projection(tmp_image)
-                vert_areas = find_areas(vert_proj,17,1)
+
+
+                tmp_image = self.image[self.horizontal_lines[i][0]: end_row, tmp_overlap_1: tmp_overlap_2+1]
+                """
+                HERE BE DRAGONS
+                """
+                _, cont_v = preprocess_img(tmp_image)
+
+
+                tmp_image2 = np.zeros(tmp_image.shape[0:2], np.uint8)
+                tmp_image3 = np.zeros_like(tmp_image2)
+
+                #cv2.drawContours(tmp_image3,cont_v,-1,(255,255,255))
+
+                filtered_contours = []
+                for cont in cont_v:
+                    if cont.shape[0] >= int(end_row - self.horizontal_lines[i][1]):
+                        filtered_contours.append(cont)
+
+                classified_contours_v = contour_classification(filtered_contours)
+                classified_lines_v = find_line_fragments_2(classified_contours_v, 1, 0)
+                for c_line in classified_lines_v:
+                    if c_line.classification == 3:
+                        for fragment in c_line.fragments:
+                            cv2.line(tmp_image3, fragment.start_point, fragment.end_point, (255,255,255),1)
+                cv2.imwrite("export/tmp3.jpg", tmp_image3)
+                cv2.drawContours(tmp_image2,filtered_contours,-1, (255,255,255))
+                cv2.imwrite("export/test-contouring.jpg",tmp_image2)
+                vert_proj = vertical_projection(tmp_image3)
+                vert_areas = find_areas(vert_proj,8,1)
                 if vert_areas.shape[0] == 0:
                     continue
-                """
+
                 tmp_image_highlated = np.copy(self.vertical_lines_image)
                 tmp_image_highlated = cv2.cvtColor(tmp_image_highlated, cv2.COLOR_GRAY2BGR)
                 for v in vert_areas:
@@ -962,15 +990,14 @@ class Worker(QObject):
                     cv2.line(tmp_image_highlated, (v[1]+overlap[1],self.horizontal_lines[i][0]) , (v[1]+overlap[1], end_row), (0,255,0),2)
                 cv2.imwrite("export/tmp-image" + str(i) + "-" + str(overlap[0]) + "-" + str(tmp_overlap_1) + "-" + str(
                     tmp_overlap_2) + ".jpg", tmp_image_highlated)
-                """
+
                 vert_areas_tmp = []
 
 
                 #check if horizontally these lines cover at least half of the cell
                 for area in vert_areas:
-                    tmp_horizontal_proj = horizontal_projection(tmp_image[:, area[0]: area[1]+1])
-                    tmp_horizontal_areas = find_areas(tmp_horizontal_proj, int((end_row - self.horizontal_lines[i][0])/2),
-                                                      1)
+                    tmp_horizontal_proj = horizontal_projection(tmp_image2[:, area[0]: area[1]+1])
+                    tmp_horizontal_areas = find_areas(tmp_horizontal_proj, 2,int((end_row - self.horizontal_lines[i][0])/2))
                     if tmp_horizontal_areas.shape[0] == 0:
                         continue
                     else:
@@ -978,11 +1005,31 @@ class Worker(QObject):
                             horizontal_area_length = tmp_horizontal_areas[0,2]
                         else:
                             horizontal_area_length = np.sum(tmp_horizontal_areas[:,2])
-                        if horizontal_area_length >= int(self.horizontal_lines[overlap[0]][0] - self.horizontal_lines[i][1] - 5):
-                            vert_areas_tmp.append(area)
+                        #if horizontal_area_length >= int(self.horizontal_lines[overlap[0]][0] - self.horizontal_lines[i][1]):
+                        vert_areas_tmp.append(np.append(area, [tmp_horizontal_areas[0][0], tmp_horizontal_areas[-1][1], horizontal_area_length]))
 
                 vert_areas = np.array(vert_areas_tmp)
 
+                vert_areas_tmp = []
+                vert_areas_y_1_mean = np.mean(vert_areas[:,3])
+                vert_areas_y_1_std = np.std(vert_areas[:,3], ddof=1)
+
+                vert_areas_y_2_mean = np.mean(vert_areas[:,4])
+                vert_areas_y_2_std = np.std(vert_areas[:,4], ddof=1)
+
+                vert_areas_length_mean = np.mean(vert_areas[:,5])
+                vert_areas_length_std = np.std(vert_areas[:,5], ddof=1)
+
+                vert_areas_quartile_25 = np.percentile(vert_areas[:,5],25)
+                vert_areas_quartile_75 = np.percentile(vert_areas[:,5],75)
+                iqr = vert_areas_quartile_75 - vert_areas_quartile_25
+
+
+                for vert_area in vert_areas:
+                    if vert_area[5] >= vert_areas_length_mean - vert_areas_length_std:
+                        vert_areas_tmp.append(vert_area)
+
+                vert_areas = np.array(vert_areas_tmp)
                 for j in range(0, vert_areas.shape[0]-1):
                     pt_1_y = self.horizontal_lines[i][1]
                     pt_2_y = self.horizontal_lines[i][1]
