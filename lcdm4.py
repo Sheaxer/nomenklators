@@ -17,20 +17,24 @@ import math
 import sys
 from photo import PhotoViewer
 from matplotlib import pyplot as plt
+from louloudis import get_number_of_lines
 
 gray_color_table = [qRgb(i, i, i) for i in range(256)]
+
 
 def binarize_image(img, otsu=True):
     img_binarized = None
     if otsu:
-        threshold, img_binarized = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        threshold, img_binarized = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     else:
-        threshold, img_binarized = cv2.threshold(img, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        threshold, img_binarized = cv2.threshold(img, 128, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
     return img_binarized
 
+
 def equalize_image(img):
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     return clahe.apply(img)
+
 
 def _get_kernel(theta) -> float:
     ksize = 31
@@ -44,6 +48,7 @@ def filter_image(img, theta=np.pi):
 
 def invert(img):
     return cv2.bitwise_not(img)
+
 
 def fill_horizontal_lines(img, start_row, end_row, vertical_areas, start_index, stop_index):
     for i in range(start_index, stop_index):
@@ -106,28 +111,62 @@ def preprocess_img(image: np.ndarray):
     # noise_removal = cv2.GaussianBlur(gray, (5,5),3)
     # noise_removal = cv2.fastNlMeansDenoising(gray, None, 20, 7, 21)
     equalized = equalize_image(gray)
-
+    """
     img_filtered = filter_image(equalized, theta=np.pi)
-
+    
     _, img_vertical_binarized = cv2.threshold(img_filtered, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-    img_filtered = filter_image(equalized, theta=np.pi/2)
+    
+    img_filtered = filter_image(equalized, theta=np.pi / 2)
     _, img_horizontal_binarized = cv2.threshold(img_filtered, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-
 
     # th2, img_bin_noise = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     # thinned = cv2.ximgproc.thinning(img_bin_noise)
     # dilated = cv2.dilate(thinned, np.ones((1,10),np.uint8))
     # thinned2 = cv2.ximgproc.thinning(dilated)
     # thinned = cv2.dilate(thinned,np.ones((6,1),np.uint8))
+  
     contours_vertical, hierarchy_horizontal = cv2.findContours(img_vertical_binarized, cv2.RETR_LIST,
                                                                cv2.CHAIN_APPROX_NONE)
+   
     contours_horizontal, hierarchy_horizontal = cv2.findContours(img_horizontal_binarized, cv2.RETR_LIST,
                                                                  cv2.CHAIN_APPROX_NONE)
-
+    """
     # classified_contour_image = np.zeros((img.shape[0], img.shape[1]), np.uint8)
-    return contours_horizontal, contours_vertical
+    # return equalized, contours_horizontal
+    return equalized, gray
+
+
+def get_vertical_contours(equalized_image):
+    img_filtered = filter_image(equalized_image, theta=np.pi)
+
+    _, img_vertical_binarized = cv2.threshold(img_filtered, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    contours_vertical, hierarchy_horizontal = cv2.findContours(img_vertical_binarized, cv2.RETR_LIST,
+                                                               cv2.CHAIN_APPROX_NONE)
+    return contours_vertical
+
+
+def get_horizontal_contours(equalized_image):
+    img_filtered = filter_image(equalized_image, theta=np.pi / 2)
+    _, img_horizontal_binarized = cv2.threshold(img_filtered, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    contours_horizontal, hierarchy_horizontal = cv2.findContours(img_horizontal_binarized, cv2.RETR_LIST,
+                                                                 cv2.CHAIN_APPROX_NONE)
+    return contours_horizontal
+
+
+def get_binary_after_gabor(gray):
+    img_filtered_vertical = filter_image(gray.copy(), theta=np.pi)
+    img_vertical_binarized = binarize_image(img_filtered_vertical)
+
+    cv2.imwrite("export/bin_vert.jpg",img_vertical_binarized)
+
+    img_filtered_horizontal = filter_image(gray.copy(), theta= np.pi / 2)
+    img_horizontal_binarized = binarize_image(img_filtered_horizontal)
+
+    cv2.imwrite("export/bin_horizont.jpg",img_horizontal_binarized)
+
+    img = cv2.bitwise_or(img_vertical_binarized, img_horizontal_binarized)
+
+    return img
 
 
 def rotate(image, angle, center=None, scale=1.0):
@@ -376,10 +415,6 @@ def create_allowed_direction_image(classified_contours, minimal_size, max_gap, a
     return tmp_image
 
 
-
-
-
-
 def find_horizontal_areas(horizontal_lines_image, angle, areas_gap, min_vertical_area_value=5, min_line_value=300):
     # rotate image
     tmp_image_h_rotated = rotate(horizontal_lines_image, angle)
@@ -453,23 +488,6 @@ def find_horizontal_areas(horizontal_lines_image, angle, areas_gap, min_vertical
     return {"angle": angle, "areas": filtered_horizontal_areas, "image": tmp_image_h_rotated,
             "total_area": np.sum(filtered_horizontal_areas[:, 2]), "projection": horizontal_proj,
             }
-
-
-def find_vertical_lines_2(vertical_lines_image, angle, horizontal_lines, horizontal_lines_vertical_areas):
-    tmp_image_v_rotated = rotate(vertical_lines_image, angle)
-
-    for i in range(0, horizontal_lines.shape[0] - 1):
-        k = i + 1
-        found_next_line = False
-        overlapping_points = []
-        start_point_1 = horizontal_lines_vertical_areas[i][0][0]
-        end_point_1 = horizontal_lines_vertical_areas[i][-1][1]
-        available_area = end_point_1 - start_point_1
-        while k < horizontal_lines.shape[0] and available_area > 100:
-            for j in range(0, horizontal_lines_vertical_areas[i].shape[0]):
-                start_point = horizontal_lines_vertical_areas[i][j][0]
-                end_point = horizontal_lines_vertical_areas[i][j][1]
-                overlaps = []
 
 
 def find_vertical_areas(vertical_lines_image, angle, areas_gap, min_area_value=1):
@@ -546,6 +564,8 @@ class DialogApp(QWidget):
         self.image_height = 0
         self.image_name = None
 
+        self.gray = None
+
         self.export_folder = r"export/"
 
         self.vertical_contours = None
@@ -568,7 +588,7 @@ class DialogApp(QWidget):
 
         self.find_horizontal_lines_button = QPushButton("Find Horizontal Lines")
         self.find_horizontal_lines_button.clicked.connect(self.activate_find_horizontal_lines)
-
+        """
         self.vertical_contour_min_length = 20
         self.vertical_contour_min_length_slider = SliderDuo("Minimal vertical contour length",
                                                             self.vertical_contour_min_length, 10, 3000)
@@ -576,6 +596,7 @@ class DialogApp(QWidget):
 
         self.find_vertical_lines_button = QPushButton("Find Vertical Lines")
         self.find_vertical_lines_button.clicked.connect(self.activate_find_vertical_lines)
+        """
 
         self.find_tables_button = QPushButton("Find Tables")
         self.find_tables_button.clicked.connect(self.activate_find_tables)
@@ -588,15 +609,17 @@ class DialogApp(QWidget):
         VBlayout.addWidget(self.horizontal_contour_min_length_slider)
         VBlayout.addWidget(self.find_horizontal_lines_button)
 
-        VBlayout.addWidget(self.vertical_contour_min_length_slider)
-        VBlayout.addWidget(self.find_vertical_lines_button)
+        # VBlayout.addWidget(self.vertical_contour_min_length_slider)
+        # VBlayout.addWidget(self.find_vertical_lines_button)
         VBlayout.addWidget(self.find_tables_button)
         self.table = None
 
         self.image_viewer = None
         self.horizontal_viewer = None
-        self.vertical_viewer = None
+        # self.vertical_viewer = None
         self.table_viewer = None
+
+        self.equalized_image = None
         # HBlayout.setAlignment(Qt.AlignLeft)
         # HBlayout.addWidget(self.loadImageButton)
         # VBlayout.addLayout(HBlayout)
@@ -607,16 +630,21 @@ class DialogApp(QWidget):
             self.editPixInfo.setText('%d, %d' % (pos.x(), pos.y()))
     """
 
-    def update_horizontal_contour_min_length(self,value):
+    def update_horizontal_contour_min_length(self, value):
         self.horizontal_contour_min_length = value
 
-    def update_vertical_contour_min_length(self,value):
+    """
+    def update_vertical_contour_min_length(self, value):
         self.vertical_contour_min_length = value
+    
+    #image, equalized_image, horizontal_contours, horizontal_contour_min_size, horizontal_lines, 
+                # horizontal_lines_image
+    """
 
     def initiate_worker(self):
-        self.worker = Worker(self.horizontal_contours, self.horizontal_contour_min_length, self.vertical_contours,
-                             self.vertical_contour_min_length, self.image, self.horizontal_lines,
-                             self.horizontal_lines_image, self.vertical_lines_image)
+        self.worker = Worker(self.image, self.equalized_image, self.gray, self.horizontal_contours,
+                             self.horizontal_contour_min_length,
+                             self.horizontal_lines, self.horizontal_lines_image)
 
         self.worker_thread = QThread()
         self.worker.moveToThread(self.worker_thread)
@@ -626,7 +654,7 @@ class DialogApp(QWidget):
         if not self.operationLock.tryLock():
             return
         file_name, _ = QFileDialog.getOpenFileName(self, 'Open Image File',
-                                                   r"C:\school\Herr Eugen Antal_2020-09-23_220056\Herr Eugen Antal",
+                                                   r"C:\school\Herr Eugen Antal_2020-09-23_220056\tables",
                                                    "Image files (*.jpg *.jpeg *.gif *.png)")
         if file_name is None or not file_name:
             self.operationLock.unlock()
@@ -643,7 +671,7 @@ class DialogApp(QWidget):
         self.image_height = self.image.shape[0]
         self.initiate_worker()
         self.worker_thread.started.connect(self.worker.preprocess_image)
-        self.worker.processed4.connect(self.image_processed)
+        self.worker.processed3.connect(self.image_processed)
         self.worker_thread.start()
 
     def save_image(self, img, string):
@@ -658,108 +686,18 @@ class DialogApp(QWidget):
             f.write(content)
             f.close()
 
-    def image_processed(self, horizontal_contours, vertical_contours):
+    def image_processed(self, equalized_image, gray, horizontal_contours):
         self.horizontal_contours = horizontal_contours
-        self.vertical_contours = vertical_contours
+        self.gray = gray
+        self.equalized_image = equalized_image
+        self.save_image(equalized_image, "equalized")
         QMessageBox.about(self, "Title", "Finished Processing")
-        self.image_viewer = create_viewer(self.image,"Image")
+        self.image_viewer = create_viewer(self.image, "Image")
         # self.viewer.setPhoto(QPixmap( QPixmap.fromImage(toQImage(thinned))))
         self.operationLock.unlock()
-    """
-    def activate_find_vertical_contours(self):
-        if not self.operationLock.tryLock():
-            return
-        if self.thinned is None:
-            QMessageBox.about(self, "Title", "You have to load image first")
-            self.operationLock.unlock()
-            return
-        self.initiate_worker()
-        self.worker_thread.started.connect(self.worker.find_vertical_contours)
-        self.worker.processed1.connect(self.finish_finding_vertical_contours)
-        self.worker_thread.start()
 
-    def finish_finding_vertical_contours(self, image):
-        self.vertical_image = image
-        QMessageBox.about(self, "Title", "Vertical Contours found")
-        self.vertical_contour_viewer = create_viewer(self.vertical_image, "Vertical Contours")
-        self.operationLock.unlock()
-    """
 
-    def activate_find_vertical_lines(self):
-        if not self.operationLock.tryLock():
-            return
-        if self.horizontal_contours is None:
-            QMessageBox.about(self, "Title", "You have to load image first")
-            self.operationLock.unlock()
-            return
-        """
-        if self.min_horizontal_area is None:
-            QMessageBox.about(self, "Title", "You have to find horizontal lines first")
-            self.operationLock.unlock()
-            return
-        if self.vertical_image is None:
-            QMessageBox.about(self, "Title", "You have to find vertical contours first")
-            self.operationLock.unlock()
-            return
-        """
-        self.initiate_worker()
-        self.worker_thread.started.connect(self.worker.find_vertical_lines)
-        self.worker.processed_2_images.connect(self.finished_finding_vertical_lines)
-        self.worker_thread.start()
 
-    def finished_finding_vertical_lines(self, vertical_lines_image, image):
-
-        self.vertical_lines_image = vertical_lines_image
-        self.vertical_image = image
-        self.save_image(self.vertical_image, "vertical-contours-" + str(self.vertical_contour_min_length))
-        self.save_image(self.image, "vertical-lines-" + str(self.vertical_contour_min_length))
-        self.operationLock.unlock()
-        self.vertical_viewer = create_viewer(image, "vertical contours")
-        """
-        self.save_variable(table,"table")
-        self.table = table
-        used_colors = []
-        if len(table) > 0:
-            img = np.copy(self.image)
-            img = rotate(img, self.min_horizontal_area['angle'])
-            for table_line in table:
-
-                if len(table_line) > 0:
-                    color = list(np.random.random(size=3) * 256)
-                    while color in used_colors:
-                        color = list(np.random.random(size=3) * 256)
-                    used_colors.append(color)
-                    for cell in table_line:
-                        cv2.line(img, cell[0], cell[1], color, 2)
-                        cv2.line(img, cell[0], cell[2], color, 2)
-                        cv2.line(img, cell[1], cell[3], color, 2)
-                        cv2.line(img, cell[2], cell[3], color, 2)
-            img = rotate(img, 0 - self.min_horizontal_area['angle'])
-            self.save_image(img,"tables-detected")
-        self.operationLock.unlock()
-    """
-    """
-    def activate_find_horizontal_contours(self):
-        if not self.operationLock.tryLock():
-            return
-        if self.thinned is None:
-            QMessageBox.about(self, "Title", "You have to load image first")
-            self.operationLock.unlock()
-            return
-        self.initiate_worker()
-        self.worker_thread.started.connect(self.worker.find_horizontal_contours)
-        self.worker.processed1.connect(self.finished_finding_horizontal_contours)
-        self.worker_thread.start()
-    
-    def finished_finding_horizontal_contours(self, image):
-        self.horizontal_image = image
-        QMessageBox.about(self, "Title", "Horizontal Contours found")
-        self.horizontal_contours_viewer = create_viewer(self.horizontal_image, "Horizontal Contours")
-
-        self.vertical_lines_viewer = None
-
-        self.operationLock.unlock()
-    """
     def activate_find_horizontal_lines(self):
         if not self.operationLock.tryLock():
             return
@@ -772,35 +710,18 @@ class DialogApp(QWidget):
         self.worker.processed_lines_image.connect(self.finished_finding_horizontal_lines)
         self.worker_thread.start()
 
-    def finished_finding_horizontal_lines(self, horizontal_lines, horizontal_lines_image,image):
+    def finished_finding_horizontal_lines(self, horizontal_lines, horizontal_lines_image, image):
         self.horizontal_image = image
         self.horizontal_lines = horizontal_lines
         self.horizontal_lines_image = horizontal_lines_image
         self.save_image(image, "horizontal-lines-found")
         self.operationLock.unlock()
-        self.horizontal_viewer = create_viewer(image, "Horizontal Lines Detected")
+
         QMessageBox.about(self, "Title", "Found Horizontal Lines")
+        self.horizontal_viewer = create_viewer(image, "Horizontal Lines Detected")
         # print(str(self.horizontal_contour_min_length))
         # print(str(self.horizontal_contour_gap))
 
-        """
-        graph = horizontal_projection_graph(min_area['projection'], self.horizontal_image.shape)
-        graph = cv2.cvtColor(graph, cv2.COLOR_GRAY2BGR)
-        second_image = cv2.cvtColor(min_area['image'], cv2.COLOR_GRAY2BGR)
-        for area in min_area['areas']:
-            cv2.line(graph, (0, int(area[0])), (graph.shape[1] - 1, int(area[0])), (255, 0, 0), 2)
-            cv2.line(second_image, (0, int(area[0])), (second_image.shape[1] - 1, int(area[0])), (255, 0, 0), 2)
-            cv2.line(graph, (0, int(area[1])), (graph.shape[1] - 1, int(area[1])), (0, 255, 0), 2)
-            cv2.line(second_image, (0, int(area[1])), (second_image.shape[1] - 1, int(area[1])), (0, 255, 0), 2)
-
-        self.save_image(graph, "Horizontal-Areas-" + print_str)
-        self.save_image(second_image, "highlated-lines-" + print_str)
-        self.save_image(min_area['fixed_image'], "fixed-lines-" + print_str + print_str_2)
-        # self.save_image(min_area['fixed_image_2'], "fixed-lines2-" + print_str + print_str_2)
-        # self.save_variable(min_area['vertical_areas'], "horizontal-lines-vertical-areas-" + print_str + print_str_2)
-        self.horizontal_lines_viewer = create_viewer(min_area['fixed_image'],
-                                                     "Fixed Horizontal Lines " + print_str + print_str_2)
-        """
 
     def activate_find_tables(self):
         if not self.operationLock.tryLock():
@@ -813,10 +734,6 @@ class DialogApp(QWidget):
             QMessageBox.about(self, "Title", "You have to find horizontal lines")
             self.operationLock.unlock()
             return
-        if self.vertical_lines_image is None:
-            QMessageBox.about(self, "Title", "You have to find vertical lines")
-            self.operationLock.unlock()
-            return
 
         self.initiate_worker()
         self.worker_thread.started.connect(self.worker.find_tables)
@@ -825,10 +742,8 @@ class DialogApp(QWidget):
 
     def finished_finding_tables(self, table, image):
         self.table_viewer = create_viewer(image, "Higlated Table")
-        self.save_image(image, "table-" + str(self.horizontal_contour_min_length) + "-" +
-                        str(self.vertical_contour_min_length) + "-")
-        self.save_variable(table, "table-" +str(self.horizontal_contour_min_length) + "-" +
-                        str(self.vertical_contour_min_length) + "-" )
+        self.save_image(image, "table-" + str(self.horizontal_contour_min_length) + "-")
+        self.save_variable(table, "table-" + str(self.horizontal_contour_min_length) + "-")
         self.table = table
         self.operationLock.unlock()
 
@@ -836,37 +751,38 @@ class DialogApp(QWidget):
 class Worker(QObject):
     processed1 = pyqtSignal(np.ndarray)
     processed2 = pyqtSignal(np.ndarray, np.ndarray)
-    processed3 = pyqtSignal(np.ndarray, np.ndarray, np.ndarray)
-    processed4 = pyqtSignal(list, list)
+    processed3 = pyqtSignal(np.ndarray, np.ndarray, list)
+    processed4 = pyqtSignal(np.ndarray, list)
     processed5 = pyqtSignal(dict)
     processed6 = pyqtSignal(list)
 
     processed_lines_image = pyqtSignal(np.ndarray, np.ndarray, np.ndarray)
-    processed_2_images = pyqtSignal(np.ndarray,np.ndarray)
+    processed_2_images = pyqtSignal(np.ndarray, np.ndarray)
     processed_list_image = pyqtSignal(list, np.ndarray)
     finished = pyqtSignal()
 
-    def __init__(self, horizontal_contours, horizontal_contour_min_size, vertical_contours, vertical_contours_size,
-                 image, horizontal_lines, horizontal_lines_image, vertical_lines_image):
+    def __init__(self, image, equalized_image, gray, horizontal_contours, horizontal_contour_min_size, horizontal_lines,
+                 horizontal_lines_image):
         super().__init__()
         self.image = image
+        self.equalized_image = equalized_image
         self.image_height = image.shape[0]
         self.image_width = image.shape[1]
         self.horizontal_contours = horizontal_contours
         self.horizontal_contour_min_size = horizontal_contour_min_size
-
-        self.vertical_contours = vertical_contours
-        self.vertical_contours_size = vertical_contours_size
-
         self.horizontal_lines = horizontal_lines
-        self.vertical_lines_image = vertical_lines_image
         self.horizontal_lines_image = horizontal_lines_image
+        self.gray = gray
 
     def preprocess_image(self):
         if self.image is not None:
-            horizontal_contours, vertical_contours = preprocess_img(self.image)
-            self.processed4.emit(horizontal_contours, vertical_contours)
+            print(self.image.shape)
+            equalized_image, gray = preprocess_img(self.image)
+            horizontal_contours = get_horizontal_contours(equalized_image)
+            # horizontal_contours, vertical_contours = preprocess_img(self.image)
+            self.processed3.emit(equalized_image, gray, horizontal_contours)
             self.finished.emit()
+
     """
     def find_vertical_contours(self):
         tmp_image_v = create_allowed_direction_image(self.classified_contours, self.vertical_contour_min_length,
@@ -876,22 +792,23 @@ class Worker(QObject):
         self.processed1.emit(tmp_image_v)
         self.finished.emit()
     """
-
+    """
     def find_vertical_lines(self):
 
-        img = np.zeros((self.image_height,self.image_width), np.uint8)
+        img = np.zeros((self.image_height, self.image_width), np.uint8)
         filtered_vertical_contours = []
         for contour in self.vertical_contours:
             if contour.shape[0] > self.vertical_contours_size:
                 filtered_vertical_contours.append(contour)
 
-        cv2.drawContours(img,filtered_vertical_contours,-1,(255,255,255))
+        cv2.drawContours(img, filtered_vertical_contours, -1, (255, 255, 255))
 
         img2 = np.copy(self.image)
-        cv2.drawContours(img2,filtered_vertical_contours,-1,(255,0,0),4)
-        #first is just drawn vertical controures, second is contoures drawn contoures onto original image
-        self.processed_2_images.emit(img,img2)
+        cv2.drawContours(img2, filtered_vertical_contours, -1, (255, 0, 0), 4)
+        # first is just drawn vertical controures, second is contoures drawn contoures onto original image
+        self.processed_2_images.emit(img, img2)
         self.finished.emit()
+    """
 
     def find_tables(self):
         table = []
@@ -900,7 +817,7 @@ class Worker(QObject):
         overlap_margin = 50
         for i in range(0, self.horizontal_lines.shape[0] - 1):
             table_line = []
-            j = i+1
+            j = i + 1
             found_next_line = False
             start_point_1 = self.horizontal_lines[i][3]
             end_point_1 = self.horizontal_lines[i][4]
@@ -930,11 +847,15 @@ class Worker(QObject):
                                 overlap_start_point = overlapping_points[k][2]
                             if overlapping_points[k][1] < overlap_end_point <= overlapping_points[k][2]:
                                 overlap_end_point = overlapping_points[k][1]
-                    if overlap_start_point < overlap_end_point and (overlap_end_point - overlap_start_point) > minimum_table_width:
-                        available_area = available_area - (overlap_end_point - overlap_start_point)
-                        overlapping_points.append(np.array([j,overlap_start_point, overlap_end_point],np.uint32))
+                    if overlap_start_point < overlap_end_point and (
+                            overlap_end_point - overlap_start_point) > minimum_table_width:
+                        if (overlap_end_point - overlap_start_point) > available_area:
+                            available_area = 0
+                        else:
+                            available_area = available_area - (overlap_end_point - overlap_start_point)
+                        overlapping_points.append(np.array([j, overlap_start_point, overlap_end_point], np.uint32))
                         found_next_line = True
-                j+=1
+                j += 1
             if not found_next_line:
                 continue
 
@@ -949,178 +870,111 @@ class Worker(QObject):
                 overlap = np.array([overlap[0], tmp_overlap_1, tmp_overlap_2], np.uint32)
 
                 end_row = self.horizontal_lines[overlap[0]][1]
+                vert_areas, vertical_lines_image = find_vertical_lines_between_horizontal_lines(self.equalized_image,
+                                                                                                self.horizontal_lines_image,
+                                                                                                self.horizontal_lines[
+                                                                                                    i],
+                                                                                                self.horizontal_lines[
+                                                                                                    overlap[0]],
+                                                                                                tmp_overlap_1,
+                                                                                               tmp_overlap_2)
+                if vert_areas is not None:
+                    for j in range(0, vert_areas.shape[0] - 1):
+                        pt_1_y = self.horizontal_lines[i][0]
+                        pt_2_y = self.horizontal_lines[i][0]
 
+                        pt_3_y = self.horizontal_lines[overlap[0]][1]
+                        pt_4_y = self.horizontal_lines[overlap[0]][1]
 
+                        # rotated_horizontal_image = rotate(self.horizontal_image,self.angle_for_vertical_lines)
+                        sliced_image = self.horizontal_lines_image[self.horizontal_lines[i][0]: end_row + 1,
+                                       int(overlap[1] + vert_areas[j][0]): int(overlap[1] + vert_areas[j][1] + 1)]
 
-                tmp_image = self.image[self.horizontal_lines[i][0]: end_row, tmp_overlap_1: tmp_overlap_2+1]
-                """
-                HERE BE DRAGONS
-                """
-                _, cont_v = preprocess_img(tmp_image)
+                        sliced_horizontal_proj = horizontal_projection(sliced_image)
 
+                        sliced_areas = find_areas(sliced_horizontal_proj, 1, 1)
+                        if sliced_areas.shape[0] > 0:
+                            pt_1_y = sliced_areas[0][0] + self.horizontal_lines[i][0]
+                            pt_3_y = sliced_areas[-1][1] + self.horizontal_lines[i][0]
 
-                tmp_image2 = np.zeros(tmp_image.shape[0:2], np.uint8)
-                tmp_image3 = np.zeros_like(tmp_image2)
+                        sliced_image = self.horizontal_lines_image[self.horizontal_lines[i][0]: end_row,
+                                       vert_areas[j + 1][0]: vert_areas[j + 1][1] + 1]
 
-                #cv2.drawContours(tmp_image3,cont_v,-1,(255,255,255))
+                        sliced_horizontal_proj = horizontal_projection(sliced_image)
 
-                filtered_contours = []
-                for cont in cont_v:
-                    if cont.shape[0] >= int(end_row - self.horizontal_lines[i][1]):
-                        filtered_contours.append(cont)
+                        sliced_areas = find_areas(sliced_horizontal_proj, 1, 1)
 
-                classified_contours_v = contour_classification(filtered_contours)
-                classified_lines_v = find_line_fragments_2(classified_contours_v, 1, 0)
-                for c_line in classified_lines_v:
-                    if c_line.classification == 3:
-                        for fragment in c_line.fragments:
-                            cv2.line(tmp_image3, fragment.start_point, fragment.end_point, (255,255,255),1)
-                cv2.imwrite("export/tmp3.jpg", tmp_image3)
-                cv2.drawContours(tmp_image2,filtered_contours,-1, (255,255,255))
-                cv2.imwrite("export/test-contouring.jpg",tmp_image2)
-                vert_proj = vertical_projection(tmp_image3)
-                vert_areas = find_areas(vert_proj,8,1)
-                if vert_areas.shape[0] == 0:
-                    continue
+                        if sliced_areas.shape[0] > 0:
+                            pt_2_y = sliced_areas[0][0] + self.horizontal_lines[i][0]
+                            pt_4_y = sliced_areas[-1][1] + self.horizontal_lines[i][0]
 
-                tmp_image_highlated = np.copy(self.vertical_lines_image)
-                tmp_image_highlated = cv2.cvtColor(tmp_image_highlated, cv2.COLOR_GRAY2BGR)
-                for v in vert_areas:
-                    cv2.line(tmp_image_highlated, (v[0]+overlap[1],self.horizontal_lines[i][0]), (v[0]+overlap[1], end_row),(255,0,0),2)
-                    cv2.line(tmp_image_highlated, (v[1]+overlap[1],self.horizontal_lines[i][0]) , (v[1]+overlap[1], end_row), (0,255,0),2)
-                cv2.imwrite("export/tmp-image" + str(i) + "-" + str(overlap[0]) + "-" + str(tmp_overlap_1) + "-" + str(
-                    tmp_overlap_2) + ".jpg", tmp_image_highlated)
+                        if pt_1_y > self.horizontal_lines[i][1] or pt_1_y < self.horizontal_lines[i][0]:
+                            pt_1_y = self.horizontal_lines[i][0]
 
-                vert_areas_tmp = []
+                        if pt_2_y > self.horizontal_lines[i][1] or pt_2_y < self.horizontal_lines[i][0]:
+                            pt_2_y = self.horizontal_lines[i][0]
 
+                        if pt_3_y < self.horizontal_lines[overlap[0]][0] or pt_3_y > end_row:
+                            pt_3_y = self.horizontal_lines[overlap[0]][1]
 
-                #check if horizontally these lines cover at least half of the cell
-                for area in vert_areas:
-                    tmp_horizontal_proj = horizontal_projection(tmp_image2[:, area[0]: area[1]+1])
-                    tmp_horizontal_areas = find_areas(tmp_horizontal_proj, 2,int((end_row - self.horizontal_lines[i][0])/2))
-                    if tmp_horizontal_areas.shape[0] == 0:
-                        continue
-                    else:
-                        if tmp_horizontal_areas.shape[0] == 1:
-                            horizontal_area_length = tmp_horizontal_areas[0,2]
-                        else:
-                            horizontal_area_length = np.sum(tmp_horizontal_areas[:,2])
-                        #if horizontal_area_length >= int(self.horizontal_lines[overlap[0]][0] - self.horizontal_lines[i][1]):
-                        vert_areas_tmp.append(np.append(area, [tmp_horizontal_areas[0][0], tmp_horizontal_areas[-1][1], horizontal_area_length]))
+                        if pt_4_y < self.horizontal_lines[overlap[0]][0] or pt_4_y > end_row:
+                            pt_4_y = self.horizontal_lines[overlap[0]][1]
 
-                vert_areas = np.array(vert_areas_tmp)
+                        # try to recover x coordinates
 
-                vert_areas_tmp = []
-                vert_areas_y_1_mean = np.mean(vert_areas[:,3])
-                vert_areas_y_1_std = np.std(vert_areas[:,3], ddof=1)
+                        pt_1_x = vert_areas[j][0] + overlap[1]
+                        pt_3_x = vert_areas[j][0] + overlap[1]
 
-                vert_areas_y_2_mean = np.mean(vert_areas[:,4])
-                vert_areas_y_2_std = np.std(vert_areas[:,4], ddof=1)
+                        pt_2_x = vert_areas[j + 1][1] + overlap[1]
+                        pt_4_x = vert_areas[j + 1][1] + overlap[1]
 
-                vert_areas_length_mean = np.mean(vert_areas[:,5])
-                vert_areas_length_std = np.std(vert_areas[:,5], ddof=1)
+                        sliced_image = vertical_lines_image[self.horizontal_lines[i][0]: self.horizontal_lines[i][1],
+                                       vert_areas[j][0]: vert_areas[j + 1][1] + 1]
 
-                vert_areas_quartile_25 = np.percentile(vert_areas[:,5],25)
-                vert_areas_quartile_75 = np.percentile(vert_areas[:,5],75)
-                iqr = vert_areas_quartile_75 - vert_areas_quartile_25
+                        sliced_vertical_projection = vertical_projection(sliced_image)
+                        sliced_areas = find_areas(sliced_vertical_projection, 1, 1)
+                        if sliced_areas.shape[0] > 0:
+                            pt_1_x = sliced_areas[0][0] + vert_areas[j][0] + overlap[1]
+                            pt_2_x = sliced_areas[-1][1] + vert_areas[j][0] + overlap[1]
 
+                        sliced_image = vertical_lines_image[self.horizontal_lines[overlap[0]][0]: end_row,
+                                       vert_areas[j][0]: vert_areas[j + 1][1] + 1]
 
-                for vert_area in vert_areas:
-                    if vert_area[5] >= vert_areas_length_mean - vert_areas_length_std:
-                        vert_areas_tmp.append(vert_area)
+                        sliced_vertical_projection = vertical_projection(sliced_image)
+                        sliced_areas = find_areas(sliced_vertical_projection, 1, 1)
 
-                vert_areas = np.array(vert_areas_tmp)
-                for j in range(0, vert_areas.shape[0]-1):
-                    pt_1_y = self.horizontal_lines[i][1]
-                    pt_2_y = self.horizontal_lines[i][1]
+                        if sliced_areas.shape[0] > 0:
+                            pt_3_x = sliced_areas[0][0] + vert_areas[j][0] + overlap[1]
+                            pt_4_x = sliced_areas[-1][1] + vert_areas[j][0] + overlap[1]
 
-                    pt_3_y = self.horizontal_lines[overlap[0]][0]
-                    pt_4_y = self.horizontal_lines[overlap[0]][0]
+                        if pt_1_x > (overlap[1] + vert_areas[j][1]) or pt_1_x < (overlap[1] + vert_areas[j][0]):
+                            pt_1_x = overlap[1] + vert_areas[j][0]
 
-                    #rotated_horizontal_image = rotate(self.horizontal_image,self.angle_for_vertical_lines)
-                    sliced_image = self.horizontal_lines_image[self.horizontal_lines[i][0]: end_row+1,
-                                   int(overlap[1] + vert_areas[j][0]): int(overlap[1] + vert_areas[j][1] + 1)]
+                        if pt_2_x < (overlap[1] + vert_areas[j + 1][0]) or pt_2_x > (overlap[1] + vert_areas[j + 1][1]):
+                            pt_2_x = overlap[1] + vert_areas[j + 1][1]
 
-                    sliced_horizontal_proj = horizontal_projection(sliced_image)
+                        if pt_3_x > (overlap[1] + vert_areas[j][1]) or pt_3_x < (overlap[1] + vert_areas[j][0]):
+                            pt_3_x = overlap[1] + vert_areas[j][0]
 
-                    sliced_areas = find_areas(sliced_horizontal_proj,1,1)
-                    if sliced_areas.shape[0] > 0:
-                        pt_1_y = sliced_areas[0][1] + self.horizontal_lines[i][0]
-                        pt_3_y = sliced_areas[-1][0] + self.horizontal_lines[i][0]
+                        if pt_4_x < (overlap[1] + vert_areas[j + 1][0]) or pt_4_x > (overlap[1] + vert_areas[j + 1][1]):
+                            pt_4_x = overlap[1] + vert_areas[j + 1][1]
 
-                    sliced_image = self.horizontal_lines_image[self.horizontal_lines[i][0]: end_row,
-                                   vert_areas[j+1][0]: vert_areas[j+1][1]+1]
-
-                    sliced_horizontal_proj = horizontal_projection(sliced_image)
-
-                    sliced_areas = find_areas(sliced_horizontal_proj, 1, 1)
-
-                    if sliced_areas.shape[0] > 0:
-                        pt_2_y = sliced_areas[0][1] + self.horizontal_lines[i][0]
-                        pt_4_y = sliced_areas[-1][0] + self.horizontal_lines[i][0]
-
-                    if pt_1_y > self.horizontal_lines[i][1] or pt_1_y < self.horizontal_lines[i][0]:
-                        pt_1_y = self.horizontal_lines[i][1]
-
-                    if pt_2_y > self.horizontal_lines[i][1] or pt_2_y < self.horizontal_lines[i][0]:
-                        pt_2_y = self.horizontal_lines[i][1]
-
-                    if pt_3_y < self.horizontal_lines[overlap[0]][0] or pt_3_y > end_row:
-                        pt_3_y = self.horizontal_lines[overlap[0]][0]
-
-                    if pt_4_y < self.horizontal_lines[overlap[0]][0] or pt_4_y > end_row:
-                        pt_4_y = self.horizontal_lines[overlap[0]][0]
-
-
-                    # try to recover x coordinates
-
-                    pt_1_x = vert_areas[j][1] + overlap[1]
-                    pt_3_x = vert_areas[j][1] + overlap[1]
-
-                    pt_2_x = vert_areas[j+1][0] + overlap[1]
-                    pt_4_x = vert_areas[j+1][0] + overlap[1]
-
-                    sliced_image = self.vertical_lines_image[self.horizontal_lines[i][0]: self.horizontal_lines[i][1],
-                                   vert_areas[j][0]: vert_areas[j + 1][1] + 1]
-
-                    sliced_vertical_projection = vertical_projection(sliced_image)
-                    sliced_areas = find_areas(sliced_vertical_projection, 1,1)
-                    if sliced_areas.shape[0] > 0:
-                        pt_1_x = sliced_areas[0][1] + vert_areas[j][0] + overlap[1]
-                        pt_2_x = sliced_areas[-1][0] + vert_areas[j][0] + overlap[1]
-
-                    sliced_image = self.vertical_lines_image[self.horizontal_lines[overlap[0]][0]: end_row,
-                                   vert_areas[j][0]: vert_areas[j + 1][1] + 1]
-
-                    sliced_vertical_projection = vertical_projection(sliced_image)
-                    sliced_areas = find_areas(sliced_vertical_projection, 1, 1)
-
-                    if sliced_areas.shape[0] > 0:
-                        pt_3_x = sliced_areas[0][1] + vert_areas[j][0] + overlap[1]
-                        pt_4_x = sliced_areas[-1][0] + vert_areas[j][0] + overlap[1]
-
-                    if pt_1_x > (overlap[1] + vert_areas[j][1]) or pt_1_x < (overlap[1] + vert_areas[j][0]):
-                        pt_1_x = overlap[1] + vert_areas[j][1]
-
-                    if pt_2_x < (overlap[1] + vert_areas[j + 1][0]) or pt_2_x > (overlap[1] + vert_areas[j + 1][1]):
-                        pt_2_x = overlap[1] + vert_areas[j + 1][0]
-
-                    if pt_3_x > (overlap[1] + vert_areas[j][1]) or pt_3_x < (overlap[1] + vert_areas[j][0]):
-                        pt_3_x = overlap[1] + vert_areas[j][1]
-
-                    if pt_4_x < (overlap[1] + vert_areas[j + 1][0]) or pt_4_x > (overlap[1] + vert_areas[j + 1][1]):
-                        pt_4_x = overlap[1] + vert_areas[j + 1][0]
-
-                    table_line.append(
-                        [(pt_1_x, pt_1_y), (pt_2_x, pt_2_y), (pt_3_x, pt_3_y), (pt_4_x, pt_4_y), pt_2_x - pt_1_x,
-                         pt_4_y - pt_2_y])
+                        table_line.append(
+                            [(pt_1_x, pt_1_y), (pt_2_x, pt_2_y), (pt_3_x, pt_3_y), (pt_4_x, pt_4_y), pt_2_x - pt_1_x,
+                             pt_4_y - pt_2_y])
 
             table.append(table_line)
 
+        table = try_fitting_table(table)
+
+        classification_string, classification_image = classify_table(table, self.horizontal_lines, self.gray, np.copy(self.image))
+        print(classification_string)
+        cv2.imwrite("export/classified-image.jpg",classification_image)
+        img = np.copy(self.image)
         used_colors = []
         if len(table) > 0:
-            img = np.copy(self.image)
-            #img = rotate(img, self.min_horizontal_area['angle'])
+
+            # img = rotate(img, self.min_horizontal_area['angle'])
             for table_line in table:
 
                 if len(table_line) > 0:
@@ -1134,8 +988,9 @@ class Worker(QObject):
                         cv2.line(img, cell[1], cell[3], color, 2)
                         cv2.line(img, cell[2], cell[3], color, 2)
 
-        self.processed_list_image.emit(table,img)
+        self.processed_list_image.emit(table, img)
         self.finished.emit()
+
     """
     def find_horizontal_contours(self):
         tmp_image_h = create_allowed_direction_image(self.classified_contours, self.horizontal_contour_min_length,
@@ -1183,7 +1038,7 @@ class Worker(QObject):
         min_area['fixed_image'] = img2
         # cv2.imwrite("export/fixed_lines.jpg",img2)
         """
-        img = np.zeros((self.image_height,self.image_width), np.uint8)
+        img = np.zeros((self.image_height, self.image_width), np.uint8)
         filtered_horizontal_contours = []
         for contour in self.horizontal_contours:
             if contour.shape[0] > self.horizontal_contour_min_size:
@@ -1197,27 +1052,626 @@ class Worker(QObject):
         for area in horizontal_areas:
             sliced_vertical_img = img[area[0]:area[1], :]
             vert_proj = vertical_projection(sliced_vertical_img)
-            vert_areas = find_areas(vert_proj,2,1)
+            vert_areas = find_areas(vert_proj, 2, 1)
             horizontal_line_areas.append(np.append(area, [vert_areas[0][0], vert_areas[-1][1]]))
         horizontal_line_areas = np.array(horizontal_line_areas)
-
-        start_point = horizontal_line_areas[np.argsort(horizontal_line_areas[:,3])][0,3]
-        end_point = horizontal_line_areas[np.argsort(horizontal_line_areas[:,4])][-1,4]
-
-        for area in horizontal_line_areas:
-            if area[3] < (start_point + 100):
-                area[3] = start_point
-            if area[4] < (end_point - 100):
-                area[4] = end_point
-
         img2 = np.copy(self.image)
-        for area in horizontal_line_areas:
-            cv2.line(img2,(area[3], area[0]), (area[4], area[0]), (255,0,0),4)
-            cv2.line(img2,(area[3],area[1]), (area[4], area[1]), (0,255,0),4)
+        if horizontal_line_areas.shape[0]> 0:
+            start_point = horizontal_line_areas[np.argsort(horizontal_line_areas[:, 3])][0, 3]
+            end_point = horizontal_line_areas[np.argsort(horizontal_line_areas[:, 4])][-1, 4]
+
+            for area in horizontal_line_areas:
+                if area[3] < (start_point + 100):
+                    area[3] = start_point
+                if area[4] < (end_point - 100):
+                    area[4] = end_point
+
+
+            for area in horizontal_line_areas:
+                cv2.line(img2, (area[3], area[0]), (area[4], area[0]), (255, 0, 0), 4)
+                cv2.line(img2, (area[3], area[1]), (area[4], area[1]), (0, 255, 0), 4)
 
         self.processed_lines_image.emit(horizontal_line_areas, img, img2)
-        #self.processed5.emit(min_area)
+        # self.processed5.emit(min_area)
         self.finished.emit()
+
+
+def find_vertical_lines_between_horizontal_lines(equalized_image, horizontal_lines_image, horizontal_line_area_1,
+                                                 horizontal_line_area_2, start_x, end_x):
+    # print("test")
+
+    y_margin = 10
+    # try to look up and down from the lines - vertical lines usually go up and down
+    start_row = horizontal_line_area_1[0] - y_margin
+    start_row = 0 if start_row < 0 else start_row
+    end_row = horizontal_line_area_2[1] + y_margin + 1
+    end_row = equalized_image.shape[0] if end_row > equalized_image.shape[0] else end_row
+    tmp_image = equalized_image[start_row: end_row, start_x: end_x + 1]
+    cont_v = get_vertical_contours(tmp_image)
+
+    filtered_contours = []
+
+    for cont in cont_v:
+        if cont.shape[0] >= int(horizontal_line_area_2[0] - horizontal_line_area_1[1]) - \
+                int((horizontal_line_area_2[0] - horizontal_line_area_1[1]) / 20):
+            filtered_contours.append(cont)
+
+    classified_contours_v = contour_classification(filtered_contours)
+    classified_lines_v = find_line_fragments_2(classified_contours_v, 1, 0)
+
+    contoured_vertical_image = np.zeros_like(tmp_image)
+    for c_line in classified_lines_v:
+        if c_line.classification == 3:
+            for fragment in c_line.fragments:
+                cv2.line(contoured_vertical_image, fragment.start_point, fragment.end_point, (255, 255, 255), 1)
+
+    # debug
+    # cv2.imwrite("export/cont.jpg",contoured_vertical_image)
+
+    vert_proj = vertical_projection(contoured_vertical_image)
+    vert_areas = find_areas(vert_proj, 10, 1)
+    if vert_areas.shape[0] == 0:
+        return None, contoured_vertical_image
+
+    # debug
+    """
+    contoured_image_2_debug = cv2.cvtColor(contoured_vertical_image, cv2.COLOR_GRAY2BGR)
+    for area in vert_areas:
+        cv2.line(contoured_image_2_debug, (area[0],0), (area[0],contoured_image_2_debug.shape[0]-1), (255,0,0),2)
+        cv2.line(contoured_image_2_debug, (area[1],0), (area[1], contoured_image_2_debug.shape[0]-1), (0,255,0),2)
+    cv2.imwrite("export/cont2.jpg", contoured_image_2_debug)
+    """
+    # debug
+
+    vert_areas_tmp = []
+    for area in vert_areas:
+        tmp_horizontal_proj = horizontal_projection(contoured_vertical_image[:, area[0]: area[1] + 1])
+
+        # debug
+        # cv2.imwrite("export/vert-line-horizontal.jpg",contoured_vertical_image[:, area[0]: area[1] + 1])
+
+        tmp_horizontal_areas = find_areas(tmp_horizontal_proj, 1,
+                                          12)
+
+        if tmp_horizontal_areas.shape[0] == 0:
+            continue
+        else:
+            if tmp_horizontal_areas.shape[0] == 1:
+                horizontal_area_length = tmp_horizontal_areas[0, 2]
+            else:
+                # should this be here?
+                horizontal_area_length = int(tmp_horizontal_areas[-1][1] - tmp_horizontal_areas[0][0])
+            # if horizontal_area_length >= int(self.horizontal_lines[overlap[0]][0] - self.horizontal_lines[i][1]):
+            vert_areas_tmp.append(np.append(area, [horizontal_area_length]))
+
+    vert_areas = np.array(vert_areas_tmp)
+    vert_areas_tmp = []
+
+    for vert_area in vert_areas:
+
+        vert_area_x_2 = vert_area[1] + 30
+        if vert_area_x_2 >= horizontal_lines_image.shape[1]:
+            vert_area_x_2 = horizontal_lines_image.shape[1] - 1
+
+        tmp_horizontal_image = horizontal_lines_image[horizontal_line_area_1[0]: horizontal_line_area_2[1] + 1,
+                               vert_area[0]: vert_area_x_2]
+        # debug
+        # cv2.imwrite("export/aaa.jpg",tmp_horizontal_image)
+
+        # debug
+        """
+        horizontal_line_image_2 = np.copy(horizontal_lines_image)
+        horizontal_line_image_2 = cv2.cvtColor(horizontal_line_image_2, cv2.COLOR_GRAY2BGR)
+        cv2.line(horizontal_line_image_2,(vert_area[0],horizontal_line_area_1[0]), (vert_area[0], horizontal_line_area_2[1]), (255,0,0),2)
+        cv2.line(horizontal_line_image_2, (vert_area[1], horizontal_line_area_1[0]), (vert_area[1], horizontal_line_area_2[1]), (0,255,0),2)
+        cv2.imwrite("export/bbb.jpg", horizontal_line_image_2)
+        """
+        # debug
+
+        tmp_horizontal_proj = horizontal_projection(tmp_horizontal_image)
+        tmp_horizontal_areas = find_areas(tmp_horizontal_proj, 2, 1)
+        if tmp_horizontal_areas.shape[0] == 0:
+            continue
+            # min_length = horizontal_line_area_2[0] - horizontal_line_area_1[1]
+        elif tmp_horizontal_areas.shape[0] == 1:
+            if tmp_horizontal_areas[0][0] > horizontal_line_area_2[0] - horizontal_line_area_1[0]:
+                min_length = horizontal_line_area_1[0] + tmp_horizontal_areas[0][1] - horizontal_line_area_1[1]
+            else:
+                min_length = horizontal_line_area_2[0] - horizontal_line_area_1[0] - tmp_horizontal_areas[0][0]
+        else:
+            min_length = tmp_horizontal_areas[-1][1] - tmp_horizontal_areas[0][0]
+        # add some percentage?
+        min_length -= int(min_length / 10)
+        if vert_area[3] >= min_length:
+            vert_areas_tmp.append(vert_area)
+
+    vert_areas = np.array(vert_areas_tmp)
+
+    return vert_areas, contoured_vertical_image
+
+
+def try_fitting_table(table):
+    for i in range(0, len(table)):
+        if len(table[i]) > 0:
+            changed = True
+            while changed:
+                changed = False
+                values_list = []
+                for t in table[i]:
+                    values_list.append(t[4])
+                values_list = np.array(values_list)
+                width_mean = np.mean(values_list)
+                width_std = np.std(values_list)
+                cut_off = width_std * 1.5
+                lower = width_mean - cut_off
+                upper = width_mean + cut_off
+                for j in range(0, len(table[i])):
+                    if table[i][j][4] < lower:
+                        # merge two next ??
+                        # needs to check if merging left or right is below upper?
+                        if j > 0:
+                            if table[i][j][1][0] - table[i][j - 1][0][0] < upper:
+                                # merging those two tables together
+                                table_line_tmp = table[i][0:j - 1]
+                                table_line_tmp.append(
+                                    [
+                                        table[i][j - 1][0],
+                                        table[i][j][1],
+                                        table[i][j - 1][2],
+                                        table[i][j][3],
+                                        table[i][j][1][0] - table[i][j - 1][0][0],
+                                        table[i][j][5]
+                                    ]
+                                )
+                                if j + 1 < len(table[i]):
+                                    for k in range(j + 1, len(table[i])):
+                                        table_line_tmp.append(table[i][k])
+                                table[i] = table_line_tmp
+                                changed = True
+                                break
+                        if j + 1 < len(table[i]):
+                            if table[i][j + 1][1][0] - table[i][j][0][0] < upper:
+                                table_line_tmp = table[i][0:j]
+                                table_line_tmp.append(
+                                    [
+                                        table[i][j][0],
+                                        table[i][j + 1][1],
+                                        table[i][j][2],
+                                        table[i][j + 1][3],
+                                        table[i][j + 1][1][0] - table[i][j][0][0],
+                                        table[i][j][5]
+                                    ]
+                                )
+                                if j + 2 < len(table[i]):
+                                    for k in range(j + 2, len(table[i])):
+                                        table_line_tmp.append(table[i][k])
+                                table[i] = table_line_tmp
+                                changed = True
+                                break
+                        """       
+                        if table[i][j+1][4] < lower:
+                            # merge them:
+                            table_line_tmp = table[i][0:j]
+                            table_line_tmp.append(
+                                [
+                                    table[i][j][0],
+                                    table[i][j+1][1],
+                                    table[i][j][2],
+                                    table[i][j+1][3],
+                                    table[i][j+1][1][0] - table[i][j][0][0],
+                                    table[i][j][5]])
+
+                            #try appending rest of the list:
+                            if j+2 < len(table[i]):
+                                for k in range(j+2, len(table[i])):
+                                    table_line_tmp.append(table[i][k])
+                            table[i] = table_line_tmp
+                            changed = True
+                            break
+                        """
+                    elif table[i][j][4] > upper:
+                        if table[i][j][1][0] - (table[i][j][0][0] + width_mean) > lower:
+                            table_line_tmp = table[i][0:j]
+                            table_line_tmp.append(
+                                [
+                                    table[i][j][0],
+                                    (int(table[i][j][0][0] + width_mean), table[i][j][0][1]),
+                                    table[i][j][2],
+                                    (int(table[i][j][3][0] + width_mean), table[i][j][3][1]),
+                                    int(width_mean),
+                                    table[i][j][5]
+                                ]
+                            )
+                            table_line_tmp.append(
+                                [
+                                    (int(table[i][j][0][0] + width_mean), table[i][j][0][1]),
+                                    table[i][j][1],
+                                    (int(table[i][j][2][0] + width_mean), table[i][j][2][1]),
+                                    table[i][j][3],
+                                    int(width_mean),
+                                    table[i][j][5]
+                                ]
+                            )
+
+                            if j + 2 < len(table[i]):
+                                for k in range(j + 2, len(table[i])):
+                                    table_line_tmp.append(table[i][k])
+                            changed = True
+                            table[i] = table_line_tmp
+                            break
+                """
+                if changed is False and table[i][-1][4] > upper:
+                    if table[i][-1][1][0] - (table[i][-1][0][0] + width_mean) > lower:
+                        table_line_tmp = table[i][0:-1]
+                        table_line_tmp.append(
+                            [
+                                table[i][-1][0],
+                                (int(table[i][-1][0][0] + width_mean), table[i][-1][0][1]),
+                                table[i][-1][2],
+                                (int(table[i][-1][3][0] + width_mean), table[i][-1][3][1]),
+                                int(width_mean),
+                                table[i][-1][5]
+                            ]
+                        )
+                        table_line_tmp.append(
+                            [
+                                (int(table[i][-1][0][0] + width_mean), table[i][-1][0][1]),
+                                table[i][-1][1],
+                                (int(table[i][-1][2][0] + width_mean), table[i][-1][2][1]),
+                                table[i][-1][3],
+                                int(width_mean),
+                                table[i][-1][5]
+                            ]
+                        )
+                        table[i] = table_line_tmp
+                        changed = True
+    """
+    # try to see if we need to add left or right column?
+    return table
+
+
+def classify_table(table, horizontal_lines, gray, image):
+    if table is None:
+        return None
+    table_means = []
+    for i in range(0, len(table)):
+        if len(table[i]) > 0:
+            x_values = []
+            y_values = []
+            for j in range(0, len(table[i])):
+                x_values.append(table[i][j][4])
+                y_values.append(table[i][j][5])
+
+            x_values = np.array(x_values)
+            y_values = np.array(y_values)
+
+            x_means = np.mean(x_values)
+            y_means = np.mean(y_values)
+
+            table_means.append([x_means, y_means])
+
+        else:
+            table_means.append([0, 0])
+
+    table_classification = []
+    header_body_combo = True
+
+    delta = 0.2
+
+    i = 0
+    skipped  = False
+    header_bodies = []
+    contents = []
+
+    if len(table)> 1:
+        if len(table[0]) < 4:
+            i = 1
+            #skip wrong header
+    while header_body_combo and i + 1 < len(table):
+        if len(table[i]) == 0:
+            contents.append(i)
+            i+=1
+            continue
+        upper_1 = table_means[i][0] + (table_means[i][0] * delta)
+        lower_1 = table_means[i][0] - (table_means[i][0] * delta)
+
+        if lower_1 < table_means[i + 1][0] < upper_1:
+            header_bodies.append(i)
+            i += 2
+        else:
+            contents.append(i)
+            i += 1
+
+            header_body_combo = False
+    while i < len(table):
+        contents.append(i)
+        i += 1
+
+    cipher_types = {"subs": False, "bigrams": False, "nulls": False, "codeBook": False, "inverse":False}
+    # now try to see if header bodies are the same vs content are the same
+
+    same_header_body = []
+    same_header_body_line = [0]
+    if len(header_bodies) > 0:
+        for i in range(0, len(header_bodies) - 1):
+            lower = table_means[header_bodies[i]][0] - (table_means[header_bodies[i]][0] * delta)
+            upper = table_means[header_bodies[i]][0] + (table_means[header_bodies[i]][0] * delta)
+            if lower < table_means[header_bodies[i + 1]][0] < upper:
+                same_header_body_line.append(i + 1)
+                #add_last = False
+            else:
+                same_header_body.append(same_header_body_line)
+                same_header_body_line = [i+1]
+                #add_last = True
+
+        same_header_body.append(same_header_body_line)
+
+        lines_classified = []
+        if len(same_header_body) != 0:
+            for header_body_line in same_header_body:
+                column_count = 0
+                for header_body in header_body_line:
+                    column_count += len(table[header_bodies[header_body]])
+                is_multiple = True if table_means[header_body_line[0]][1] * 2 < table_means[header_body_line[0] + 1][1] \
+                    else False
+                class_string = ""
+                if column_count < 20:
+                    if cipher_types['bigrams'] is False:
+                        cipher_types['bigrams'] = True
+                        class_string = "2"
+                    else:
+                        class_string = "0"
+
+                elif 20 < column_count < 28:
+                    if cipher_types['subs'] is False:
+                        cipher_types['subs'] = True
+                        class_string = "1"
+                    elif cipher_types['bigrams'] is False:
+                        cipher_types['bigrams'] = True
+                        class_string = "2"
+                    else:
+                        class_string = "0"
+                    if is_multiple:
+                        class_string += "f"
+                else:
+                    if cipher_types['subs'] is False:
+                        if cipher_types['bigrams'] is False:
+                            cipher_types['subs'] = True
+                            cipher_types['bigrams'] = True
+                            class_string = "12"
+                            if is_multiple:
+                                class_string += "f"
+
+                table_lines = []
+                for header_body in header_body_line:
+                    table_lines.append(["h", header_bodies[header_body]])
+                    table_lines.append(["b", header_bodies[header_body] + 1])
+                    lines_classified.append(header_bodies[header_body])
+                    lines_classified.append(header_bodies[header_body] + 1)
+                table_classification.append([class_string, table_lines])
+
+    content_classification = []
+    if len(contents) > 0:
+        if contents[0] == 0 and len(table_classification) > 0:
+            contents.pop(0)
+
+    binarized = get_binary_after_gabor(gray)
+    cv2.imwrite("export/binary.jpg", binarized)
+
+
+
+
+    if len(contents) > 0:
+        if len(contents) > 1:
+            for i in range(0, len(contents)):
+                class_string = ""
+
+                sliced = binarized[horizontal_lines[contents[i]][1]: horizontal_lines[contents[i]+1][0],:]
+                cv2.imwrite("export/sliced2.jpg",sliced)
+                try:
+                    line_number = get_number_of_lines(sliced)
+                except IndexError:
+                    line_number = 0
+                if cipher_types['subs'] is False:
+                    if i > 0:
+                        cipher_types['subs'] = True
+                    class_string = "1"
+                else:
+                    if line_number > 5:
+                        class_string = "c/{-1}"
+                    else:
+                        class_string = "0"
+                content_classification.append([
+                    class_string,
+                    contents[i]
+                ])
+        else:
+            sliced = binarized[horizontal_lines[contents[0]][1]: horizontal_lines[contents[0] + 1][0], :]
+            cv2.imwrite("export/sliced2.jpg", sliced)
+            try:
+                line_number = get_number_of_lines(sliced)
+            except IndexError:
+                line_number = 0
+            if cipher_types['subs'] is False:
+                if line_number > 3:
+                    class_string = "c"
+                else:
+                    class_string = "1"
+            else:
+                if line_number > 5:
+                    class_string = "c"
+                else:
+                    class_string = "0"
+            content_classification.append(
+                [
+                    class_string,
+                    contents[0]
+                ]
+            )
+
+
+    extra_area_classification = None
+
+
+    if horizontal_lines is not None and horizontal_lines.shape[0] > 0:
+        start_y = horizontal_lines[-1][1]
+    else:
+        start_y = 0
+
+
+    sliced = binarized[start_y+10:,:]
+    cv2.imwrite("export/sliced.jpg",sliced)
+    horizont_proj = horizontal_projection(sliced)
+    horizont_areas = find_areas(horizont_proj,1,2)
+
+    vert_proj = vertical_projection(sliced)
+    vert_areas = find_areas(vert_proj,2,80)
+
+    if vert_areas.shape[0] == 1:
+        start_x = vert_areas[0][0]
+        end_x = vert_areas[0][1]
+    elif vert_areas.shape[0] > 1:
+        start_x = vert_areas[0][0]
+        end_x = vert_areas[-1][1]
+
+    if horizont_areas.shape[0] == 1:
+        start_y2 = horizont_areas[0][0]
+        end_y2 = horizont_areas[0][1]
+    elif horizont_areas.shape[0] > 1:
+        start_y2 = horizont_areas[0][0]
+        end_y2 = horizont_areas[-1][1]
+
+
+
+    if horizont_areas.shape[0] > 0 and vert_areas.shape[0] > 0:
+        try:
+            n_lines = get_number_of_lines(sliced)
+        except:
+            n_lines = 0
+
+        if n_lines > 6:
+            class_string = "c/{-1}"
+        else:
+            class_string = "0"
+        extra_area_classification = [
+            class_string,
+            (start_x, start_y+start_y2),
+            (end_x, start_y+ + start_y2),
+            (start_x, start_y + end_y2),
+            (end_x, start_y+end_y2)
+        ]
+
+
+    #create string
+    used_colors = []
+    classification_string = ""
+
+    if len(table_classification)  > 0:
+        for table_class in table_classification:
+            classification_string += table_class[0]
+            classification_string+= "\n"
+
+            start_x = table[table_class[1][0][1]][0][0][0]
+            end_x = table[table_class[1][0][1]][-1][1][0]
+
+            start_y = table[table_class[1][0][1]][0][0][1]
+            end_y = table[table_class[1][-1][1]][0][2][1]
+
+            for table_class_line in table_class[1]:
+
+                if table[table_class_line[1]][0][0][0] < start_x:
+                    start_x = table[table_class_line[1]][0][0][0]
+                if table[table_class_line[1]][0][2][0] < start_x:
+                    start_x = table[table_class_line[1]][0][2][0]
+
+                if table[table_class_line[1]][-1][1][0] > end_x:
+                    end_x = table[table_class_line[1]][-1][1][0]
+
+                if table[table_class_line[1]][-1][3][0] > end_x:
+                    end_x = table[table_class_line[1]][-1][3][0]
+
+                classification_string+= table_class_line[0]
+                classification_string += " "
+                classification_string+= str(table[table_class_line[1]][0][0])
+                classification_string+=" "
+                classification_string+= str(table[table_class_line[1]][-1][1])
+                classification_string+=" "
+                classification_string+= str(table[table_class_line[1]][0][2])
+                classification_string+= " "
+                classification_string+= str(table[table_class_line[1]][-1][3])
+                classification_string+="\n"
+            classification_string+="\n"
+
+            color = list(np.random.random(size=3) * 256)
+            while color in used_colors:
+                color = list(np.random.random(size=3) * 256)
+            used_colors.append(color)
+            cv2.line(image, (start_x,start_y), (end_x,start_y), color, 4)
+            cv2.line(image, (start_x, start_y), (start_x,end_y), color, 4)
+            cv2.line(image, (end_x, start_y), (end_x,end_y), color, 4)
+            cv2.line(image, (start_x,end_y), (end_x, end_y), color, 4)
+
+    if len(content_classification) > 0:
+        for cont in content_classification:
+            classification_string+= cont[0]
+            classification_string+="\n"
+            start_y = horizontal_lines[cont[1]][0]
+            end_y = horizontal_lines[cont[1]+1][1]
+            if len(table[cont[1]]) == 0:
+                start_x = horizontal_lines[cont[1]][3]
+                end_x = horizontal_lines[cont[1]][4]
+
+            else:
+                start_x = table[cont[1]][0][0][0]
+                end_x = table[cont[1]][-1][1][0]
+
+            color = list(np.random.random(size=3) * 256)
+            while color in used_colors:
+                color = list(np.random.random(size=3) * 256)
+            used_colors.append(color)
+
+            cv2.line(image, (start_x,start_y), (end_x,start_y), color, 4)
+            cv2.line(image, (start_x,start_y), (start_x, end_y), color, 4)
+            cv2.line(image, (end_x,start_y), (end_x,end_y), color, 4)
+            cv2.line(image, (start_x, end_y), (end_x,end_y), color, 4)
+
+            classification_string+="c "
+            classification_string+= str((start_x,start_y))
+            classification_string+= " "
+            classification_string+= str((end_x,start_y))
+            classification_string+= " "
+            classification_string+= str((start_x,end_y))
+            classification_string+= " "
+            classification_string+=str((end_x,end_y))
+            classification_string+="\n"
+        classification_string+="\n"
+
+    if extra_area_classification is not None:
+
+        color = list(np.random.random(size=3) * 256)
+        while color in used_colors:
+            color = list(np.random.random(size=3) * 256)
+        used_colors.append(color)
+
+        cv2.line(image, extra_area_classification[1], extra_area_classification[2], color, 4)
+        cv2.line(image, extra_area_classification[1], extra_area_classification[3], color, 4)
+        cv2.line(image, extra_area_classification[2], extra_area_classification[4], color, 4)
+        cv2.line(image, extra_area_classification[3], extra_area_classification[4], color, 4)
+
+        classification_string+= extra_area_classification[0]
+        classification_string+= "\n"
+        classification_string+= "c "
+        classification_string+= str(extra_area_classification[1])
+        classification_string+= " "
+        classification_string+= str(extra_area_classification[2])
+        classification_string+= " "
+        classification_string+=str(extra_area_classification[3])
+        classification_string+= " "
+        classification_string+= str(extra_area_classification[4])
+        classification_string+="\n"
+
+    return classification_string, image
+
 
 
 class PhotoWindow(QWidget):
